@@ -1,31 +1,163 @@
 "use strict";
+const { Model } = require("sequelize");
 
 module.exports = (sequelize, DataTypes) => {
-    const Location = sequelize.define(
-        "Location",
+    class Location extends Model { }
+
+    Location.init(
         {
-            name: { type: DataTypes.STRING, allowNull: false },
-            type: {
-                type: DataTypes.ENUM(
-                    "country",
-                    "state",
-                    "city",
-                    "neighborhood",
-                    "area",
-                    "street"
-                ),
+            // 🌍 Core Fields
+            name: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            market: {
+                type: DataTypes.STRING,
                 allowNull: false,
+                defaultValue: "global",
+            },
+            country: DataTypes.STRING,
+            countryCode: DataTypes.STRING,
+            state: DataTypes.STRING,
+            city: DataTypes.STRING,
+            slug: {
+                type: DataTypes.STRING,
+                allowNull: false,
+                unique: true,
+                comment: "URL-friendly slug, e.g. 'united-kingdom' or 'london-uk'",
+            },
+
+            latitude: DataTypes.DECIMAL(10, 6),
+            longitude: DataTypes.DECIMAL(10, 6),
+            continent: DataTypes.STRING,
+            timezone: DataTypes.STRING,
+            currency: {
+                type: DataTypes.STRING,
+                defaultValue: "USD",
+            },
+            flag: {
+                type: DataTypes.STRING,
+                defaultValue: "/uploads/locations/flags/default.png",
             },
             parentId: {
                 type: DataTypes.INTEGER,
                 allowNull: true,
-                references: { model: "Locations", key: "id" },
-                onDelete: "CASCADE",
             },
-            latitude: DataTypes.DECIMAL(10, 7),
-            longitude: DataTypes.DECIMAL(10, 7),
+            type: {
+                type: DataTypes.ENUM("country", "state", "city", "neighborhood"),
+                allowNull: false,
+                defaultValue: "country",
+            },
+
+            // 🖼️ Image for region thumbnail
+            image: {
+                type: DataTypes.STRING,
+                allowNull: true,
+                comment: "Representative image of the location for UI display",
+            },
+
+            // ⭐ NEW FIELD
+            isFeatured: {
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: false,
+                comment: "Marks this location as featured for homepage or highlights",
+            },
+
+            // 🔍 SEO Fields
+            seoTitle: {
+                type: DataTypes.STRING,
+                allowNull: true,
+                comment: "SEO-optimized title, e.g. 'Top LLM Universities in London 2025'",
+            },
+            seoDescription: {
+                type: DataTypes.TEXT,
+                allowNull: true,
+                comment: "Meta description for search results",
+            },
+            seoKeywords: {
+                type: DataTypes.STRING,
+                allowNull: true,
+                comment: "Comma-separated keywords for SEO targeting",
+            },
+            canonicalUrl: {
+                type: DataTypes.STRING,
+                allowNull: true,
+                comment: "Canonical URL for avoiding duplicate pages",
+            },
+            metaImage: {
+                type: DataTypes.STRING,
+                allowNull: true,
+                comment: "Image used for Open Graph / social previews",
+            },
+            schemaType: {
+                type: DataTypes.STRING,
+                allowNull: true,
+                defaultValue: "Place",
+                comment: "Used for JSON-LD structured data",
+            },
+            faqSchema: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                comment: "Array of Q&A objects for Google rich results",
+            },
+            tags: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                comment: "Array of related topics, e.g. ['LLM in London', 'Law Universities in UK']",
+            },
+            lastUpdated: {
+                type: DataTypes.DATE,
+                allowNull: true,
+                defaultValue: DataTypes.NOW,
+                comment: "For showing 'Updated on' info on frontend",
+            },
+
+            // 💸 Affordability metadata (optional)
+            affordabilityTier: {
+                type: DataTypes.STRING,
+                allowNull: true,
+                comment: "budget | mid | premium",
+            },
+            rentMultiplier: {
+                type: DataTypes.DECIMAL(5, 2),
+                allowNull: true,
+                comment: "Neighborhood rent multiplier, e.g. 0.9 or 1.25",
+            },
         },
-        { tableName: "Locations" }
+        {
+            sequelize,
+            modelName: "Location",
+            tableName: "locations",
+            timestamps: true,
+            // underscored: true,
+            hooks: {
+                beforeValidate: (location) => {
+                    // generate slug safely
+                    const baseSlug = [
+                        location.city,
+                        location.state,
+                        location.country,
+                    ]
+                        .filter(Boolean)
+                        .join("-")
+                        .toLowerCase()
+                        .replace(/\s+/g, "-")
+                        .replace(/[^a-z0-9-]/g, "");
+
+                    if (!location.slug && baseSlug) {
+                        location.slug = baseSlug;
+                    }
+
+                    // generate canonical URL automatically
+                    const publicBaseUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/+$/, "");
+                    if (!location.canonicalUrl && location.slug && publicBaseUrl) {
+                        location.canonicalUrl = `${publicBaseUrl}/locations/${location.slug}`;
+                    }
+                },
+            },
+
+        }
     );
 
     return Location;

@@ -1,0 +1,91 @@
+# dependencies
+
+node_modules
+
+# next
+
+.next
+out
+
+# build
+
+build
+dist
+
+# logs
+
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# env
+
+.env
+.env.local
+.env.development.local
+.env.production.local
+.env.test.local
+
+# uploads
+
+uploads
+public/uploads
+
+# mac
+
+.DS_Store
+
+# vscode
+
+.vscode
+
+# idea
+
+.idea
+
+# coverage
+
+coverage
+
+# sequelize
+
+sequelize-meta.json
+
+# cache
+
+.cache
+
+# temp
+
+tmp
+temp
+
+# pm2
+
+.pm2
+
+# docker
+
+docker-data
+
+# ssl
+
+ssl
+certs
+*.pem
+*.key
+
+# backups
+
+backup
+backups
+*.sql
+*.gz
+*.zip
+
+# generated media
+
+storage
+media
