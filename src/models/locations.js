@@ -214,7 +214,7 @@ module.exports = (sequelize, DataTypes) => {
         {
             sequelize,
             modelName: "Location",
-            tableName: "locations",
+            tableName: "Locations",
             timestamps: true,
             // underscored: true,
             hooks: {
