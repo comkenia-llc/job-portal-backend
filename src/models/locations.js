@@ -96,6 +96,92 @@ module.exports = (sequelize, DataTypes) => {
                 defaultValue: "Place",
                 comment: "Used for JSON-LD structured data",
             },
+            // 📝 Rich Content Fields
+
+            overview: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Main location guide content displayed on the page",
+            },
+
+            workCulture: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Work environment and culture in this location",
+            },
+
+            jobMarketOverview: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Overview of hiring demand and employment opportunities",
+            },
+
+            popularIndustries: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                comment: "Array of industries popular in this location",
+            },
+
+            popularJobTypes: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                comment: "Array of common job titles or job categories",
+            },
+
+            transportNotes: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Transport, roads, metro, bus, airport, commute information",
+            },
+
+            lifestyleNotes: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Lifestyle, affordability, family suitability, entertainment",
+            },
+
+            nearbyAreas: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                comment: "Array of nearby areas for internal linking",
+            },
+
+            candidateTips: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Advice for candidates seeking jobs in this location",
+            },
+
+            employerNotes: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Advice for employers hiring in this location",
+            },
+
+            // 📈 Content Management
+
+            contentStatus: {
+                type: DataTypes.ENUM(
+                    "empty",
+                    "draft",
+                    "reviewed",
+                    "published"
+                ),
+                allowNull: false,
+                defaultValue: "empty",
+                comment: "Content workflow status",
+            },
+
+            indexStatus: {
+                type: DataTypes.ENUM(
+                    "auto",
+                    "index",
+                    "noindex"
+                ),
+                allowNull: false,
+                defaultValue: "auto",
+                comment: "Manual indexing control",
+            },
             faqSchema: {
                 type: DataTypes.JSON,
                 allowNull: true,

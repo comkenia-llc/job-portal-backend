@@ -13,7 +13,7 @@ const upload = require("../middlewares/upload");
 
 // Get paginated locations
 router.get("/", controller.getAllLocations);
-
+router.get("/slug/:slug/hub", controller.getLocationHubBySlug);
 // Get featured (for homepage)
 router.get("/featured", controller.getFeaturedLocations);
 

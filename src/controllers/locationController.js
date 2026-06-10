@@ -1,4 +1,13 @@
-const { Location, Job, Company } = require("../models");
+const {
+    Location,
+    Job,
+    Company,
+    JobCategory,
+    JobFunction,
+    Skill,
+    SkillCategory,
+    Guide
+} = require("../models");
 const path = require("path");
 const fs = require("fs");
 const { Op, Sequelize } = require("sequelize");
@@ -689,5 +698,368 @@ exports.searchLocations = async (req, res) => {
     } catch (err) {
         console.error("❌ searchLocations error:", err);
         res.status(500).json({ error: "Failed to search locations" });
+    }
+};
+
+
+exports.getLocationHubBySlug = async (req, res) => {
+    try {
+        const { slug } = req.params;
+
+        let location = await Location.findOne({
+            where: applyMarketScope({ slug }, req, {
+                allowAdminOverride: true,
+                allowExplicitOverride: true,
+                allowAllForAdmin: true,
+            }),
+        });
+
+        if (!location && isLocalDevHost(req)) {
+            location = await Location.findOne({ where: { slug } });
+        }
+
+        if (!location) {
+            return res.status(404).json({ message: "Location not found" });
+        }
+
+        const locationJson = serializeLocation(location);
+
+        const childLocations = await Location.findAll({
+            where: applyMarketScope({ parentId: location.id }, req, {
+                allowAdminOverride: true,
+                allowExplicitOverride: true,
+                allowAllForAdmin: true,
+            }),
+            attributes: ["id", "name", "slug", "type", "city", "state", "country"],
+            limit: 50,
+            order: [["name", "ASC"]],
+        });
+
+        const childIds = childLocations.map((item) => item.id);
+        const locationIds = [location.id, ...childIds];
+
+        const parent = location.parentId
+            ? await Location.findOne({
+                where: applyMarketScope({ id: location.parentId }, req, {
+                    allowAdminOverride: true,
+                    allowExplicitOverride: true,
+                    allowAllForAdmin: true,
+                }),
+            })
+            : null;
+
+        let siblingLocations = [];
+
+        if (location.parentId) {
+            siblingLocations = await Location.findAll({
+                where: applyMarketScope(
+                    {
+                        parentId: location.parentId,
+                        id: { [Op.ne]: location.id },
+                    },
+                    req,
+                    {
+                        allowAdminOverride: true,
+                        allowExplicitOverride: true,
+                        allowAllForAdmin: true,
+                    }
+                ),
+                attributes: ["id", "name", "slug", "type", "city", "state", "country"],
+                limit: 12,
+                order: [["name", "ASC"]],
+            });
+        }
+
+        const jobs = await Job.findAll({
+            where: applyMarketScope(
+                {
+                    locationId: { [Op.in]: locationIds },
+                    status: "open",
+                },
+                req,
+                {
+                    allowAdminOverride: true,
+                    allowExplicitOverride: true,
+                    allowAllForAdmin: true,
+                }
+            ),
+            include: [
+                {
+                    model: Company,
+                    as: "company",
+                    attributes: ["id", "name", "slug", "logoUrl", "industry", "size"],
+                },
+                {
+                    model: JobCategory,
+                    as: "jobCategory",
+                    attributes: ["id", "name", "slug"],
+                },
+                {
+                    model: JobCategory,
+                    as: "jobSubCategory",
+                    attributes: ["id", "name", "slug"],
+                },
+                {
+                    model: Skill,
+                    as: "skillEntities",
+                    attributes: ["id", "name", "slug", "category"],
+                    through: { attributes: [] },
+                },
+                {
+                    model: JobFunction,
+                    as: "functions",
+                    attributes: ["id", "name", "slug"],
+                    through: { attributes: [] },
+                },
+            ],
+            order: [["createdAt", "DESC"]],
+            limit: 12,
+            distinct: true,
+        });
+
+        const companies = await Company.findAll({
+            where: applyMarketScope(
+                {
+                    locationId: { [Op.in]: locationIds },
+                },
+                req,
+                {
+                    allowAdminOverride: true,
+                    allowExplicitOverride: true,
+                    allowAllForAdmin: true,
+                }
+            ),
+            attributes: [
+                "id",
+                "name",
+                "slug",
+                "logoUrl",
+                "industry",
+                "size",
+                "headquarters",
+                "seoDescription",
+                "verified",
+            ],
+            order: [
+                ["verified", "DESC"],
+                ["updatedAt", "DESC"],
+            ],
+            limit: 12,
+        });
+
+        const jobCategoryRows = await Job.findAll({
+            where: applyMarketScope(
+                {
+                    locationId: { [Op.in]: locationIds },
+                    status: "open",
+                    jobCategoryId: { [Op.ne]: null },
+                },
+                req,
+                {
+                    allowAdminOverride: true,
+                    allowExplicitOverride: true,
+                    allowAllForAdmin: true,
+                }
+            ),
+            attributes: [
+                "jobCategoryId",
+                [Sequelize.fn("COUNT", Sequelize.col("Job.id")), "count"],
+            ],
+            include: [
+                {
+                    model: JobCategory,
+                    as: "jobCategory",
+                    attributes: ["id", "name", "slug"],
+                },
+            ],
+            group: ["jobCategoryId", "jobCategory.id"],
+            order: [[Sequelize.literal("count"), "DESC"]],
+            limit: 10,
+        });
+
+        const popularJobCategories = jobCategoryRows
+            .filter((row) => row.jobCategory)
+            .map((row) => ({
+                id: row.jobCategory.id,
+                name: row.jobCategory.name,
+                slug: row.jobCategory.slug,
+                count: Number(row.get("count") || 0),
+            }));
+
+        const skillMap = new Map();
+        const functionMap = new Map();
+
+        jobs.forEach((job) => {
+            (job.skillEntities || []).forEach((skill) => {
+                const existing = skillMap.get(skill.id) || {
+                    id: skill.id,
+                    name: skill.name,
+                    slug: skill.slug,
+                    category: skill.category,
+                    count: 0,
+                };
+
+                existing.count += 1;
+                skillMap.set(skill.id, existing);
+            });
+
+            (job.functions || []).forEach((fn) => {
+                const existing = functionMap.get(fn.id) || {
+                    id: fn.id,
+                    name: fn.name,
+                    slug: fn.slug,
+                    count: 0,
+                };
+
+                existing.count += 1;
+                functionMap.set(fn.id, existing);
+            });
+        });
+
+        const skillsInDemand = Array.from(skillMap.values())
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 12);
+
+        const popularJobFunctions = Array.from(functionMap.values())
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 12);
+
+        const industryMap = new Map();
+
+        companies.forEach((company) => {
+            if (!company.industry) return;
+
+            const name = company.industry.trim();
+            if (!name) return;
+
+            const existing = industryMap.get(name) || {
+                name,
+                count: 0,
+            };
+
+            existing.count += 1;
+            industryMap.set(name, existing);
+        });
+
+        const popularIndustries = Array.from(industryMap.values())
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 12);
+
+        const walkIns = jobs
+            .filter((job) => job.isWalkInInterview)
+            .map((job) => job.toJSON());
+
+        let guides = [];
+
+        if (Guide) {
+            const terms = [
+                location.name,
+                location.city,
+                location.state,
+                location.country,
+                location.slug?.replace(/-/g, " "),
+                parent?.name,
+                parent?.city,
+                parent?.state,
+                parent?.country,
+            ]
+                .filter(Boolean)
+                .map((item) => String(item).trim())
+                .filter(Boolean);
+
+            const uniqueTerms = [...new Set(terms)];
+
+            const guideWhere = {
+                status: "published",
+            };
+
+            if (uniqueTerms.length) {
+                guideWhere[Op.or] = uniqueTerms.flatMap((term) => [
+                    { title: { [Op.like]: `%${term}%` } },
+                    {
+                        slug: {
+                            [Op.like]: `%${term.toLowerCase().replace(/\s+/g, "-")}%`,
+                        },
+                    },
+                    { content: { [Op.like]: `%${term}%` } },
+                ]);
+            }
+
+            guides = await Guide.findAll({
+                where: guideWhere,
+                attributes: ["id", "title", "slug", "type", "coverImage", "updatedAt"],
+                order: [["updatedAt", "DESC"]],
+                limit: 8,
+            });
+        }
+
+        const manualNearby = Array.isArray(locationJson.nearbyAreas)
+            ? locationJson.nearbyAreas
+            : normalizeJSON(locationJson.nearbyAreas) || [];
+
+        const nearbyLocations =
+            manualNearby.length > 0
+                ? manualNearby
+                : siblingLocations.map((item) => serializeLocation(item));
+
+        const stats = {
+            jobCount: await Job.count({
+                where: applyMarketScope(
+                    {
+                        locationId: { [Op.in]: locationIds },
+                        status: "open",
+                    },
+                    req,
+                    {
+                        allowAdminOverride: true,
+                        allowExplicitOverride: true,
+                        allowAllForAdmin: true,
+                    }
+                ),
+            }),
+
+            companyCount: await Company.count({
+                where: applyMarketScope(
+                    {
+                        locationId: { [Op.in]: locationIds },
+                    },
+                    req,
+                    {
+                        allowAdminOverride: true,
+                        allowExplicitOverride: true,
+                        allowAllForAdmin: true,
+                    }
+                ),
+            }),
+
+            childLocationCount: childLocations.length,
+            walkInCount: walkIns.length,
+            skillsCount: skillsInDemand.length,
+            industriesCount: popularIndustries.length,
+            guideCount: guides.length,
+        };
+
+        return res.json({
+            location: locationJson,
+            parent: parent ? serializeLocation(parent) : null,
+            children: childLocations.map(serializeLocation),
+            nearbyLocations,
+            stats,
+            jobs: jobs.map((job) => job.toJSON()),
+            walkIns,
+            companies: companies.map((company) => company.toJSON()),
+            popularJobCategories,
+            popularJobFunctions,
+            skillsInDemand,
+            popularIndustries,
+            guides: guides.map((guide) => guide.toJSON()),
+        });
+    } catch (err) {
+        console.error("❌ getLocationHubBySlug error:", err);
+
+        return res.status(500).json({
+            message: "Failed to fetch location hub data",
+            details: err.message,
+        });
     }
 };
