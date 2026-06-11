@@ -3,44 +3,36 @@
 const TABLE = "Locations";
 
 const COLUMNS = {
-  overview: {
+  heroSummary: {
     type: "TEXT_LONG",
     allowNull: true,
   },
-  workCulture: {
+  hiringTrends: {
     type: "TEXT_LONG",
     allowNull: true,
   },
-  jobMarketOverview: {
+  employerLandscape: {
     type: "TEXT_LONG",
     allowNull: true,
   },
-  popularIndustries: {
+  salaryCostNarrative: {
+    type: "TEXT_LONG",
+    allowNull: true,
+  },
+  relocationNotes: {
+    type: "TEXT_LONG",
+    allowNull: true,
+  },
+  comparisonNotes: {
+    type: "TEXT_LONG",
+    allowNull: true,
+  },
+  featuredFacts: {
     type: "JSON",
     allowNull: true,
   },
-  popularJobTypes: {
+  chartAnnotations: {
     type: "JSON",
-    allowNull: true,
-  },
-  transportNotes: {
-    type: "TEXT_LONG",
-    allowNull: true,
-  },
-  lifestyleNotes: {
-    type: "TEXT_LONG",
-    allowNull: true,
-  },
-  nearbyAreas: {
-    type: "JSON",
-    allowNull: true,
-  },
-  candidateTips: {
-    type: "TEXT_LONG",
-    allowNull: true,
-  },
-  employerNotes: {
-    type: "TEXT_LONG",
     allowNull: true,
   },
 };
@@ -63,43 +55,12 @@ module.exports = {
         });
       }
     }
-
-    if (!table.contentStatus) {
-      await queryInterface.addColumn(TABLE, "contentStatus", {
-        type: Sequelize.ENUM("empty", "draft", "reviewed", "published"),
-        allowNull: false,
-        defaultValue: "empty",
-      });
-    }
-
-    if (!table.indexStatus) {
-      await queryInterface.addColumn(TABLE, "indexStatus", {
-        type: Sequelize.ENUM("auto", "index", "noindex"),
-        allowNull: false,
-        defaultValue: "auto",
-      });
-    }
   },
 
   async down(queryInterface) {
     const table = await queryInterface.describeTable(TABLE);
 
-    const columns = [
-      "overview",
-      "workCulture",
-      "jobMarketOverview",
-      "popularIndustries",
-      "popularJobTypes",
-      "transportNotes",
-      "lifestyleNotes",
-      "nearbyAreas",
-      "candidateTips",
-      "employerNotes",
-      "contentStatus",
-      "indexStatus",
-    ];
-
-    for (const column of columns) {
+    for (const column of Object.keys(COLUMNS)) {
       if (table[column]) {
         await queryInterface.removeColumn(TABLE, column);
       }

@@ -2,6 +2,7 @@ const { Op, ValidationError } = require("sequelize");
 const {
     WalkInInterview,
     WalkInInterviewRole,
+    Job,
     Company,
     Location,
 } = require("../models");
@@ -87,6 +88,137 @@ const includeDefault = [
         required: false,
     },
 ];
+
+const buildLocationLabel = (location) =>
+    location?.name ||
+    [location?.city, location?.state, location?.country].filter(Boolean).join(", ") ||
+    null;
+
+const toPlain = (record) => (record?.toJSON ? record.toJSON() : record);
+
+const normalizeWalkInJob = (jobRecord) => {
+    const job = toPlain(jobRecord);
+    const company = toPlain(job.company) || null;
+    const locationSource = toPlain(job.jobLocation) || null;
+    const location = locationSource
+        ? {
+              id: locationSource.id,
+              name: locationSource.name,
+              slug: locationSource.slug,
+              city: locationSource.city,
+              state: locationSource.state,
+              country: locationSource.country,
+          }
+        : null;
+
+    return {
+        id: `job-${job.id}`,
+        jobId: job.id,
+        sourceType: "job",
+        title: job.title,
+        slug: job.slug,
+        companyId: job.companyId,
+        locationId: job.locationId,
+        interviewStartDate: job.walkInInterviewDate,
+        interviewEndDate: job.walkInInterviewEndDate,
+        interviewTime: job.walkInInterviewTime,
+        venueDetails: job.walkInInterviewLocation || buildLocationLabel(location) || null,
+        mapUrl: job.walkInInterviewMapUrl,
+        contactEmail: null,
+        contactPhone: null,
+        whatsapp: null,
+        requirements: null,
+        documentsRequired: null,
+        instructions: job.walkInInterviewInstructions || null,
+        status: job.status === "open" ? "open" : job.status,
+        isFeatured: !!job.isFeatured,
+        views: job.views || 0,
+        seoTitle: job.seoTitle || null,
+        seoDescription: job.seoDescription || null,
+        seoKeywords: job.seoKeywords || null,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        company,
+        location,
+        roles: job.title
+            ? [
+                  {
+                      id: `job-role-${job.id}`,
+                      title: job.title,
+                      description: null,
+                  },
+              ]
+            : [],
+    };
+};
+
+const matchesText = (value, query) =>
+    String(value || "")
+        .toLowerCase()
+        .includes(String(query || "").toLowerCase());
+
+const filterWalkInJobs = (items, req) => {
+    const roleQuery = req.query.role?.trim().replace(/-/g, " ").toLowerCase();
+    const keyword = req.query.keyword?.trim().toLowerCase();
+    const companySlug = req.query.company?.trim().toLowerCase();
+    const locationQuery = req.query.location?.trim().replace(/-/g, " ").toLowerCase();
+
+    return items.filter((item) => {
+        if (companySlug && item.company?.slug?.toLowerCase() !== companySlug) {
+            return false;
+        }
+
+        if (locationQuery) {
+            const locationMatched = [
+                item.location?.slug,
+                item.location?.name,
+                item.location?.city,
+                item.location?.state,
+            ].some((value) => matchesText(value, locationQuery));
+
+            if (!locationMatched) return false;
+        }
+
+        if (roleQuery) {
+            const roleMatched = item.roles.some((role) => matchesText(role.title, roleQuery));
+            if (!roleMatched) return false;
+        }
+
+        if (keyword) {
+            const haystacks = [
+                item.title,
+                item.instructions,
+                item.company?.name,
+                item.company?.slug,
+                item.location?.name,
+                item.location?.slug,
+                item.location?.city,
+                item.location?.state,
+                ...item.roles.map((role) => role.title),
+            ];
+
+            if (!haystacks.some((value) => matchesText(value, keyword))) {
+                return false;
+            }
+        }
+
+        return true;
+    });
+};
+
+const sortWalkIns = (a, b) => {
+    if (Boolean(b.isFeatured) !== Boolean(a.isFeatured)) {
+        return Number(Boolean(b.isFeatured)) - Number(Boolean(a.isFeatured));
+    }
+
+    const aDate = a.interviewStartDate ? new Date(a.interviewStartDate).getTime() : Number.MAX_SAFE_INTEGER;
+    const bDate = b.interviewStartDate ? new Date(b.interviewStartDate).getTime() : Number.MAX_SAFE_INTEGER;
+    if (aDate !== bDate) return aDate - bDate;
+
+    const aCreated = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bCreated = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return bCreated - aCreated;
+};
 
 exports.createWalkInInterview = async (req, res) => {
     try {
@@ -178,6 +310,7 @@ exports.listWalkInInterviews = async (req, res) => {
         const page = Math.max(parseInt(req.query.page || "1", 10), 1);
         const limit = Math.min(Math.max(parseInt(req.query.limit || "12", 10), 1), 100);
         const offset = (page - 1) * limit;
+        const includeJobs = req.query.includeJobs === "true";
 
         const where = {
             status: req.query.status || "open",
@@ -324,7 +457,7 @@ exports.listWalkInInterviews = async (req, res) => {
             });
         }
 
-        const { rows, count } = await WalkInInterview.findAndCountAll({
+        const interviews = await WalkInInterview.findAll({
             where,
             include,
             distinct: true,
@@ -334,16 +467,87 @@ exports.listWalkInInterviews = async (req, res) => {
                 ["interviewStartDate", "ASC"],
                 ["createdAt", "DESC"],
             ],
-            limit,
-            offset,
         });
 
+        let combined = interviews.map((item) => item.toJSON());
+
+        if (includeJobs) {
+            const jobWhere = {
+                isWalkInInterview: true,
+            };
+
+            if (req.query.status) {
+                jobWhere.status = req.query.status;
+            } else {
+                jobWhere.status = "open";
+            }
+
+            if (req.query.companyId) {
+                jobWhere.companyId = Number(req.query.companyId);
+            }
+
+            if (req.query.locationId) {
+                jobWhere.locationId = Number(req.query.locationId);
+            }
+
+            if (req.query.isFeatured !== undefined) {
+                jobWhere.isFeatured = req.query.isFeatured === "true";
+            }
+
+            if (where.interviewStartDate?.[Op.between]) {
+                jobWhere.walkInInterviewDate = {
+                    [Op.between]: where.interviewStartDate[Op.between],
+                };
+            } else if (where.interviewStartDate) {
+                jobWhere.walkInInterviewDate = {};
+                if (where.interviewStartDate[Op.gte]) {
+                    jobWhere.walkInInterviewDate[Op.gte] = where.interviewStartDate[Op.gte];
+                }
+                if (where.interviewStartDate[Op.lte]) {
+                    jobWhere.walkInInterviewDate[Op.lte] = where.interviewStartDate[Op.lte];
+                }
+            }
+
+            const walkInJobs = await Job.findAll({
+                where: jobWhere,
+                include: [
+                    {
+                        model: Company,
+                        as: "company",
+                        attributes: ["id", "name", "slug", "logoUrl", "industry"],
+                        required: false,
+                    },
+                    {
+                        model: Location,
+                        as: "jobLocation",
+                        attributes: ["id", "name", "slug", "city", "state", "country"],
+                        required: false,
+                    },
+                ],
+                order: [
+                    ["isFeatured", "DESC"],
+                    ["walkInInterviewDate", "ASC"],
+                    ["createdAt", "DESC"],
+                ],
+            });
+
+            const normalizedJobs = filterWalkInJobs(
+                walkInJobs.map(normalizeWalkInJob),
+                req
+            );
+
+            combined = combined.concat(normalizedJobs);
+        }
+
+        combined.sort(sortWalkIns);
+        const paginated = combined.slice(offset, offset + limit);
+
         return res.json({
-            total: count,
+            total: combined.length,
             page,
             limit,
-            totalPages: Math.ceil(count / limit),
-            interviews: rows,
+            totalPages: Math.ceil(combined.length / limit),
+            interviews: paginated,
         });
     } catch (err) {
         console.error("❌ List walk-in interviews error:", err);
@@ -357,6 +561,7 @@ exports.listWalkInInterviews = async (req, res) => {
 exports.getWalkInInterview = async (req, res) => {
     try {
         const identifier = req.params.identifier;
+        const includeJobs = req.query.includeJobs === "true";
 
         const where = /^\d+$/.test(String(identifier))
             ? { id: Number(identifier) }
@@ -367,14 +572,41 @@ exports.getWalkInInterview = async (req, res) => {
             include: includeDefault,
         });
 
-        if (!interview) {
-            return res.status(404).json({ error: "Walk-in interview not found" });
+        if (interview) {
+            interview.views += 1;
+            await interview.save();
+
+            return res.json(interview);
         }
 
-        interview.views += 1;
-        await interview.save();
+        if (includeJobs) {
+            const job = await Job.findOne({
+                where: {
+                    ...where,
+                    isWalkInInterview: true,
+                },
+                include: [
+                    {
+                        model: Company,
+                        as: "company",
+                        attributes: ["id", "name", "slug", "logoUrl", "industry"],
+                        required: false,
+                    },
+                    {
+                        model: Location,
+                        as: "jobLocation",
+                        attributes: ["id", "name", "slug", "city", "state", "country"],
+                        required: false,
+                    },
+                ],
+            });
 
-        return res.json(interview);
+            if (job) {
+                return res.json(normalizeWalkInJob(job));
+            }
+        }
+
+        return res.status(404).json({ error: "Walk-in interview not found" });
     } catch (err) {
         console.error("❌ Get walk-in interview error:", err);
         return res.status(500).json({

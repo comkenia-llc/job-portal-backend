@@ -104,6 +104,12 @@ module.exports = (sequelize, DataTypes) => {
                 comment: "Main location guide content displayed on the page",
             },
 
+            heroSummary: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Short editorial summary shown in the hero area",
+            },
+
             workCulture: {
                 type: DataTypes.TEXT("long"),
                 allowNull: true,
@@ -114,6 +120,12 @@ module.exports = (sequelize, DataTypes) => {
                 type: DataTypes.TEXT("long"),
                 allowNull: true,
                 comment: "Overview of hiring demand and employment opportunities",
+            },
+
+            hiringTrends: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Editorial analysis of hiring patterns and growth areas",
             },
 
             popularIndustries: {
@@ -156,6 +168,42 @@ module.exports = (sequelize, DataTypes) => {
                 type: DataTypes.TEXT("long"),
                 allowNull: true,
                 comment: "Advice for employers hiring in this location",
+            },
+
+            employerLandscape: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Editorial notes about leading employers and hiring clusters",
+            },
+
+            salaryCostNarrative: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Editorial notes on salary context, rent, and cost pressures",
+            },
+
+            relocationNotes: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Advice for relocation, settling in, or moving for work",
+            },
+
+            comparisonNotes: {
+                type: DataTypes.TEXT("long"),
+                allowNull: true,
+                comment: "Editorial comparison with nearby or sibling areas",
+            },
+
+            featuredFacts: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                comment: "Array of editorial highlight facts for summary panels",
+            },
+
+            chartAnnotations: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                comment: "Optional editor-provided notes or labels for chart panels",
             },
 
             // 📈 Content Management

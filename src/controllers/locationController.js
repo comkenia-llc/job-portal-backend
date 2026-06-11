@@ -5,7 +5,6 @@ const {
     JobCategory,
     JobFunction,
     Skill,
-    SkillCategory,
     Guide
 } = require("../models");
 const path = require("path");
@@ -81,6 +80,86 @@ const serializeLocation = (loc) => ({
     displayName: buildDisplayName(loc),
 });
 
+const HUB_LOCATION_ATTRIBUTES = [
+    "id",
+    "name",
+    "slug",
+    "type",
+    "city",
+    "state",
+    "country",
+    "parentId",
+    "overview",
+    "heroSummary",
+    "jobMarketOverview",
+    "hiringTrends",
+    "transportNotes",
+    "lifestyleNotes",
+    "candidateTips",
+    "employerNotes",
+    "employerLandscape",
+    "salaryCostNarrative",
+    "relocationNotes",
+    "comparisonNotes",
+    "featuredFacts",
+    "chartAnnotations",
+    "tags",
+    "faqSchema",
+    "schemaType",
+    "seoTitle",
+    "seoDescription",
+    "metaImage",
+    "image",
+    "flag",
+    "indexStatus",
+    "canonicalUrl",
+    "lastUpdated",
+    "affordabilityTier",
+    "rentMultiplier",
+    "latitude",
+    "longitude",
+];
+
+const buildLocationTreeMaps = (locations = []) => {
+    const byId = new Map();
+    const childrenByParent = new Map();
+
+    locations.forEach((loc) => {
+        const json = serializeLocation(loc);
+        byId.set(loc.id, json);
+
+        const parentKey = loc.parentId || null;
+        if (!childrenByParent.has(parentKey)) {
+            childrenByParent.set(parentKey, []);
+        }
+        childrenByParent.get(parentKey).push(json);
+    });
+
+    return { byId, childrenByParent };
+};
+
+const collectDescendantIds = (rootId, childrenByParent) => {
+    const output = [];
+    const stack = [...(childrenByParent.get(rootId) || [])];
+
+    while (stack.length > 0) {
+        const current = stack.pop();
+        output.push(current.id);
+        const children = childrenByParent.get(current.id) || [];
+        children.forEach((child) => stack.push(child));
+    }
+
+    return output;
+};
+
+const sumCountsForIds = (ids, countsMap) =>
+    ids.reduce((sum, id) => sum + (countsMap.get(id) || 0), 0);
+
+const parseLocationJsonField = (value) => {
+    const parsed = normalizeJSON(value);
+    return Array.isArray(parsed) ? parsed : null;
+};
+
 const isLocalDevHost = (req) => {
     const host = String(req.get("host") || req.headers.host || "").toLowerCase();
     return (
@@ -134,6 +213,8 @@ exports.createLocation = async (req, res) => {
         data.longitude = toFloat(req.body.longitude);
         data.rentMultiplier = toFloat(req.body.rentMultiplier);
         data.tags = normalizeJSON(req.body.tags);
+        data.featuredFacts = normalizeJSON(req.body.featuredFacts);
+        data.chartAnnotations = normalizeJSON(req.body.chartAnnotations);
 
         if (req.body.faqSchema) {
             try {
@@ -386,6 +467,8 @@ exports.updateLocation = async (req, res) => {
         data.longitude = toFloat(req.body.longitude);
         data.rentMultiplier = toFloat(req.body.rentMultiplier);
         data.tags = normalizeJSON(req.body.tags);
+        data.featuredFacts = normalizeJSON(req.body.featuredFacts);
+        data.chartAnnotations = normalizeJSON(req.body.chartAnnotations);
 
         if (req.body.faqSchema) {
             try {
@@ -723,158 +806,250 @@ exports.getLocationHubBySlug = async (req, res) => {
         }
 
         const locationJson = serializeLocation(location);
-
-        const childLocations = await Location.findAll({
-            where: applyMarketScope({ parentId: location.id }, req, {
+        const allScopedLocations = await Location.findAll({
+            where: applyMarketScope({}, req, {
                 allowAdminOverride: true,
                 allowExplicitOverride: true,
                 allowAllForAdmin: true,
             }),
-            attributes: ["id", "name", "slug", "type", "city", "state", "country"],
-            limit: 50,
+            attributes: HUB_LOCATION_ATTRIBUTES,
             order: [["name", "ASC"]],
         });
 
-        const childIds = childLocations.map((item) => item.id);
-        const locationIds = [location.id, ...childIds];
+        const { byId, childrenByParent } = buildLocationTreeMaps(allScopedLocations);
+        const childLocations = (childrenByParent.get(location.id) || []).slice(0, 50);
+        const descendantIds = collectDescendantIds(location.id, childrenByParent);
+        const aggregateLocationIds = [location.id, ...descendantIds];
+        const aggregateDescendantLocations = descendantIds
+            .map((id) => byId.get(id))
+            .filter(Boolean);
 
-        const parent = location.parentId
-            ? await Location.findOne({
-                where: applyMarketScope({ id: location.parentId }, req, {
-                    allowAdminOverride: true,
-                    allowExplicitOverride: true,
-                    allowAllForAdmin: true,
-                }),
-            })
-            : null;
+        const parent = location.parentId ? byId.get(location.parentId) || null : null;
+        const siblingLocations = location.parentId
+            ? (childrenByParent.get(location.parentId) || [])
+                  .filter((item) => item.id !== location.id)
+                  .slice(0, 12)
+            : [];
 
-        let siblingLocations = [];
+        const jobWhere = applyMarketScope(
+            {
+                locationId: { [Op.in]: aggregateLocationIds },
+                status: "open",
+            },
+            req,
+            {
+                allowAdminOverride: true,
+                allowExplicitOverride: true,
+                allowAllForAdmin: true,
+            }
+        );
 
-        if (location.parentId) {
-            siblingLocations = await Location.findAll({
-                where: applyMarketScope(
+        const companyWhere = applyMarketScope(
+            {
+                locationId: { [Op.in]: aggregateLocationIds },
+            },
+            req,
+            {
+                allowAdminOverride: true,
+                allowExplicitOverride: true,
+                allowAllForAdmin: true,
+            }
+        );
+
+        const [
+            jobs,
+            companies,
+            jobCountsByLocationRows,
+            companyCountsByLocationRows,
+            walkInCountsByLocationRows,
+            jobCategoryRows,
+            jobFunctionRows,
+            skillsInDemandRows,
+            popularIndustriesRows,
+            trendSeriesRows,
+        ] = await Promise.all([
+            Job.findAll({
+                where: jobWhere,
+                include: [
                     {
-                        parentId: location.parentId,
-                        id: { [Op.ne]: location.id },
+                        model: Company,
+                        as: "company",
+                        attributes: ["id", "name", "slug", "logoUrl", "industry", "size"],
                     },
-                    req,
                     {
-                        allowAdminOverride: true,
-                        allowExplicitOverride: true,
-                        allowAllForAdmin: true,
-                    }
-                ),
-                attributes: ["id", "name", "slug", "type", "city", "state", "country"],
+                        model: JobCategory,
+                        as: "jobCategory",
+                        attributes: ["id", "name", "slug"],
+                    },
+                    {
+                        model: JobCategory,
+                        as: "jobSubCategory",
+                        attributes: ["id", "name", "slug"],
+                    },
+                ],
+                order: [["createdAt", "DESC"]],
                 limit: 12,
-                order: [["name", "ASC"]],
-            });
-        }
-
-        const jobs = await Job.findAll({
-            where: applyMarketScope(
-                {
-                    locationId: { [Op.in]: locationIds },
-                    status: "open",
+                distinct: true,
+            }),
+            Company.findAll({
+                where: companyWhere,
+                attributes: [
+                    "id",
+                    "name",
+                    "slug",
+                    "logoUrl",
+                    "industry",
+                    "size",
+                    "headquarters",
+                    "seoDescription",
+                    "verified",
+                ],
+                order: [
+                    ["verified", "DESC"],
+                    ["updatedAt", "DESC"],
+                ],
+                limit: 12,
+            }),
+            Job.findAll({
+                where: jobWhere,
+                attributes: ["locationId", [Sequelize.fn("COUNT", Sequelize.col("id")), "count"]],
+                group: ["locationId"],
+                raw: true,
+            }),
+            Company.findAll({
+                where: companyWhere,
+                attributes: ["locationId", [Sequelize.fn("COUNT", Sequelize.col("id")), "count"]],
+                group: ["locationId"],
+                raw: true,
+            }),
+            Job.findAll({
+                where: {
+                    ...jobWhere,
+                    isWalkInInterview: true,
                 },
-                req,
-                {
-                    allowAdminOverride: true,
-                    allowExplicitOverride: true,
-                    allowAllForAdmin: true,
-                }
-            ),
-            include: [
-                {
-                    model: Company,
-                    as: "company",
-                    attributes: ["id", "name", "slug", "logoUrl", "industry", "size"],
-                },
-                {
-                    model: JobCategory,
-                    as: "jobCategory",
-                    attributes: ["id", "name", "slug"],
-                },
-                {
-                    model: JobCategory,
-                    as: "jobSubCategory",
-                    attributes: ["id", "name", "slug"],
-                },
-                {
-                    model: Skill,
-                    as: "skillEntities",
-                    attributes: ["id", "name", "slug", "category"],
-                    through: { attributes: [] },
-                },
-                {
-                    model: JobFunction,
-                    as: "functions",
-                    attributes: ["id", "name", "slug"],
-                    through: { attributes: [] },
-                },
-            ],
-            order: [["createdAt", "DESC"]],
-            limit: 12,
-            distinct: true,
-        });
-
-        const companies = await Company.findAll({
-            where: applyMarketScope(
-                {
-                    locationId: { [Op.in]: locationIds },
-                },
-                req,
-                {
-                    allowAdminOverride: true,
-                    allowExplicitOverride: true,
-                    allowAllForAdmin: true,
-                }
-            ),
-            attributes: [
-                "id",
-                "name",
-                "slug",
-                "logoUrl",
-                "industry",
-                "size",
-                "headquarters",
-                "seoDescription",
-                "verified",
-            ],
-            order: [
-                ["verified", "DESC"],
-                ["updatedAt", "DESC"],
-            ],
-            limit: 12,
-        });
-
-        const jobCategoryRows = await Job.findAll({
-            where: applyMarketScope(
-                {
-                    locationId: { [Op.in]: locationIds },
-                    status: "open",
+                attributes: ["locationId", [Sequelize.fn("COUNT", Sequelize.col("id")), "count"]],
+                group: ["locationId"],
+                raw: true,
+            }),
+            Job.findAll({
+                where: {
+                    ...jobWhere,
                     jobCategoryId: { [Op.ne]: null },
                 },
-                req,
-                {
-                    allowAdminOverride: true,
-                    allowExplicitOverride: true,
-                    allowAllForAdmin: true,
-                }
-            ),
-            attributes: [
-                "jobCategoryId",
-                [Sequelize.fn("COUNT", Sequelize.col("Job.id")), "count"],
-            ],
-            include: [
-                {
-                    model: JobCategory,
-                    as: "jobCategory",
-                    attributes: ["id", "name", "slug"],
+                attributes: [
+                    "jobCategoryId",
+                    [Sequelize.fn("COUNT", Sequelize.col("Job.id")), "count"],
+                ],
+                include: [
+                    {
+                        model: JobCategory,
+                        as: "jobCategory",
+                        attributes: ["id", "name", "slug"],
+                    },
+                ],
+                group: ["jobCategoryId", "jobCategory.id"],
+                order: [[Sequelize.literal("count"), "DESC"]],
+                limit: 10,
+            }),
+            Job.findAll({
+                where: jobWhere,
+                attributes: [],
+                include: [
+                    {
+                        model: JobFunction,
+                        as: "functions",
+                        attributes: [
+                            "id",
+                            "name",
+                            "slug",
+                            [Sequelize.fn("COUNT", Sequelize.col("functions.id")), "count"],
+                        ],
+                        through: { attributes: [] },
+                        required: true,
+                    },
+                ],
+                group: ["functions.id"],
+                order: [[Sequelize.literal("COUNT(`functions`.`id`)"), "DESC"]],
+                limit: 12,
+                subQuery: false,
+            }),
+            Job.findAll({
+                where: jobWhere,
+                attributes: [],
+                include: [
+                    {
+                        model: Skill,
+                        as: "skillEntities",
+                        attributes: [
+                            "id",
+                            "name",
+                            "slug",
+                            "category",
+                            [Sequelize.fn("COUNT", Sequelize.col("skillEntities.id")), "count"],
+                        ],
+                        through: { attributes: [] },
+                        required: true,
+                    },
+                ],
+                group: ["skillEntities.id"],
+                order: [[Sequelize.literal("COUNT(`skillEntities`.`id`)"), "DESC"]],
+                limit: 12,
+                subQuery: false,
+            }),
+            Company.findAll({
+                where: {
+                    ...companyWhere,
+                    industry: { [Op.ne]: null },
                 },
-            ],
-            group: ["jobCategoryId", "jobCategory.id"],
-            order: [[Sequelize.literal("count"), "DESC"]],
-            limit: 10,
+                attributes: [
+                    "industry",
+                    [Sequelize.fn("COUNT", Sequelize.col("id")), "count"],
+                ],
+                group: ["industry"],
+                order: [[Sequelize.literal("count"), "DESC"]],
+                limit: 12,
+                raw: true,
+            }),
+            Job.findAll({
+                where: jobWhere,
+                attributes: [
+                    [Sequelize.fn("DATE_FORMAT", Sequelize.col("createdAt"), "%Y-%m"), "month"],
+                    [Sequelize.fn("COUNT", Sequelize.col("id")), "count"],
+                ],
+                group: [Sequelize.fn("DATE_FORMAT", Sequelize.col("createdAt"), "%Y-%m")],
+                order: [[Sequelize.literal("month"), "ASC"]],
+                raw: true,
+            }),
+        ]);
+
+        const jobCountByLocation = new Map(
+            jobCountsByLocationRows.map((row) => [Number(row.locationId), Number(row.count || 0)])
+        );
+        const companyCountByLocation = new Map(
+            companyCountsByLocationRows.map((row) => [Number(row.locationId), Number(row.count || 0)])
+        );
+        const walkInCountByLocation = new Map(
+            walkInCountsByLocationRows.map((row) => [Number(row.locationId), Number(row.count || 0)])
+        );
+
+        const directStats = {
+            jobCount: jobCountByLocation.get(location.id) || 0,
+            companyCount: companyCountByLocation.get(location.id) || 0,
+            walkInCount: walkInCountByLocation.get(location.id) || 0,
+        };
+
+        const byChildLocation = childLocations.map((child) => {
+            const nestedIds = [child.id, ...collectDescendantIds(child.id, childrenByParent)];
+            return {
+                id: child.id,
+                name: child.name,
+                slug: child.slug,
+                type: child.type,
+                jobCount: sumCountsForIds(nestedIds, jobCountByLocation),
+                companyCount: sumCountsForIds(nestedIds, companyCountByLocation),
+                walkInCount: sumCountsForIds(nestedIds, walkInCountByLocation),
+                descendantCount: nestedIds.length - 1,
+            };
         });
 
         const popularJobCategories = jobCategoryRows
@@ -886,64 +1061,29 @@ exports.getLocationHubBySlug = async (req, res) => {
                 count: Number(row.get("count") || 0),
             }));
 
-        const skillMap = new Map();
-        const functionMap = new Map();
+        const popularJobFunctions = jobFunctionRows
+            .flatMap((row) => row.functions || [])
+            .map((fn) => ({
+                id: fn.id,
+                name: fn.name,
+                slug: fn.slug,
+                count: Number(fn.get?.("count") || fn.dataValues?.count || 0),
+            }));
 
-        jobs.forEach((job) => {
-            (job.skillEntities || []).forEach((skill) => {
-                const existing = skillMap.get(skill.id) || {
-                    id: skill.id,
-                    name: skill.name,
-                    slug: skill.slug,
-                    category: skill.category,
-                    count: 0,
-                };
+        const skillsInDemand = skillsInDemandRows
+            .flatMap((row) => row.skillEntities || [])
+            .map((skill) => ({
+                id: skill.id,
+                name: skill.name,
+                slug: skill.slug,
+                category: skill.category,
+                count: Number(skill.get?.("count") || skill.dataValues?.count || 0),
+            }));
 
-                existing.count += 1;
-                skillMap.set(skill.id, existing);
-            });
-
-            (job.functions || []).forEach((fn) => {
-                const existing = functionMap.get(fn.id) || {
-                    id: fn.id,
-                    name: fn.name,
-                    slug: fn.slug,
-                    count: 0,
-                };
-
-                existing.count += 1;
-                functionMap.set(fn.id, existing);
-            });
-        });
-
-        const skillsInDemand = Array.from(skillMap.values())
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 12);
-
-        const popularJobFunctions = Array.from(functionMap.values())
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 12);
-
-        const industryMap = new Map();
-
-        companies.forEach((company) => {
-            if (!company.industry) return;
-
-            const name = company.industry.trim();
-            if (!name) return;
-
-            const existing = industryMap.get(name) || {
-                name,
-                count: 0,
-            };
-
-            existing.count += 1;
-            industryMap.set(name, existing);
-        });
-
-        const popularIndustries = Array.from(industryMap.values())
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 12);
+        const popularIndustries = popularIndustriesRows.map((row) => ({
+            name: row.industry,
+            count: Number(row.count || 0),
+        }));
 
         const walkIns = jobs
             .filter((job) => job.isWalkInInterview)
@@ -993,58 +1133,77 @@ exports.getLocationHubBySlug = async (req, res) => {
             });
         }
 
-        const manualNearby = Array.isArray(locationJson.nearbyAreas)
-            ? locationJson.nearbyAreas
-            : normalizeJSON(locationJson.nearbyAreas) || [];
+        const manualNearby = parseLocationJsonField(locationJson.nearbyAreas) || [];
 
         const nearbyLocations =
             manualNearby.length > 0
                 ? manualNearby
-                : siblingLocations.map((item) => serializeLocation(item));
+                : siblingLocations;
 
-        const stats = {
-            jobCount: await Job.count({
-                where: applyMarketScope(
-                    {
-                        locationId: { [Op.in]: locationIds },
-                        status: "open",
-                    },
-                    req,
-                    {
-                        allowAdminOverride: true,
-                        allowExplicitOverride: true,
-                        allowAllForAdmin: true,
-                    }
-                ),
-            }),
-
-            companyCount: await Company.count({
-                where: applyMarketScope(
-                    {
-                        locationId: { [Op.in]: locationIds },
-                    },
-                    req,
-                    {
-                        allowAdminOverride: true,
-                        allowExplicitOverride: true,
-                        allowAllForAdmin: true,
-                    }
-                ),
-            }),
-
+        const aggregateStats = {
+            jobCount: sumCountsForIds(aggregateLocationIds, jobCountByLocation),
+            companyCount: sumCountsForIds(aggregateLocationIds, companyCountByLocation),
+            walkInCount: sumCountsForIds(aggregateLocationIds, walkInCountByLocation),
             childLocationCount: childLocations.length,
-            walkInCount: walkIns.length,
+            descendantLocationCount: descendantIds.length,
+            cityCount: aggregateDescendantLocations.filter((item) => item.type === "city").length,
+            neighborhoodCount: aggregateDescendantLocations.filter((item) => item.type === "neighborhood").length,
             skillsCount: skillsInDemand.length,
             industriesCount: popularIndustries.length,
             guideCount: guides.length,
         };
 
+        const stats = {
+            ...aggregateStats,
+        };
+
+        const editorial = {
+            heroSummary: locationJson.heroSummary || null,
+            overview: locationJson.overview || null,
+            jobMarketOverview: locationJson.jobMarketOverview || null,
+            hiringTrends: locationJson.hiringTrends || null,
+            transportNotes: locationJson.transportNotes || null,
+            lifestyleNotes: locationJson.lifestyleNotes || null,
+            candidateTips: locationJson.candidateTips || null,
+            employerNotes: locationJson.employerNotes || null,
+            employerLandscape: locationJson.employerLandscape || null,
+            salaryCostNarrative: locationJson.salaryCostNarrative || null,
+            relocationNotes: locationJson.relocationNotes || null,
+            comparisonNotes: locationJson.comparisonNotes || null,
+            featuredFacts: parseLocationJsonField(locationJson.featuredFacts) || [],
+            chartAnnotations: parseLocationJsonField(locationJson.chartAnnotations) || [],
+            faqSchema: parseLocationJsonField(locationJson.faqSchema) || [],
+            tags: parseLocationJsonField(locationJson.tags) || [],
+        };
+
         return res.json({
             location: locationJson,
-            parent: parent ? serializeLocation(parent) : null,
-            children: childLocations.map(serializeLocation),
+            parent,
+            children: childLocations,
             nearbyLocations,
             stats,
+            directStats,
+            aggregateStats,
+            breakdowns: {
+                byChildLocation,
+                byCategory: popularJobCategories,
+                byFunction: popularJobFunctions,
+                bySkill: skillsInDemand,
+                byIndustry: popularIndustries,
+                trendSeries: trendSeriesRows.map((row) => ({
+                    label: row.month,
+                    count: Number(row.count || 0),
+                })),
+            },
+            collections: {
+                featuredJobs: jobs.map((job) => job.toJSON()),
+                featuredWalkIns: walkIns,
+                featuredCompanies: companies.map((company) => company.toJSON()),
+                childLocations,
+                nearbyLocations,
+                relatedGuides: guides.map((guide) => guide.toJSON()),
+            },
+            editorial,
             jobs: jobs.map((job) => job.toJSON()),
             walkIns,
             companies: companies.map((company) => company.toJSON()),
