@@ -169,6 +169,12 @@ const isLocalDevHost = (req) => {
     );
 };
 
+const extractDuplicateSlug = (err) => {
+    const sqlMessage = err?.original?.sqlMessage || err?.message || "";
+    const match = sqlMessage.match(/Duplicate entry '([^']+)' for key 'locations_slug_unique'/i);
+    return match?.[1] || null;
+};
+
 const getAncestorTrail = async (location, req) => {
     const trail = [];
     let currentParentId = location?.parentId || null;
@@ -245,6 +251,14 @@ exports.createLocation = async (req, res) => {
         res.status(201).json(serializeLocation(location));
     } catch (err) {
         console.error("❌ createLocation error:", err);
+        const duplicateSlug = extractDuplicateSlug(err);
+        if (duplicateSlug) {
+            return res.status(409).json({
+                message: `Location slug "${duplicateSlug}" already exists. Open the existing location and edit it instead of creating a duplicate.`,
+                code: "DUPLICATE_LOCATION_SLUG",
+                slug: duplicateSlug,
+            });
+        }
         res.status(500).json({ message: "Failed to create location" });
     }
 };
@@ -496,6 +510,14 @@ exports.updateLocation = async (req, res) => {
         res.json({ message: "✅ Location updated successfully", location: serializeLocation(location) });
     } catch (err) {
         console.error("❌ updateLocation error:", err);
+        const duplicateSlug = extractDuplicateSlug(err);
+        if (duplicateSlug) {
+            return res.status(409).json({
+                message: `Location slug "${duplicateSlug}" already exists on another record. Use a different slug or edit the existing location.`,
+                code: "DUPLICATE_LOCATION_SLUG",
+                slug: duplicateSlug,
+            });
+        }
         res.status(500).json({ message: "Failed to update location" });
     }
 };
