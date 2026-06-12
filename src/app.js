@@ -83,7 +83,7 @@ const affordabilityRoutes = require("./routes/affordabilityRoutes");
 const jobAutomationRoutes = require("./routes/jobAutomationRoutes");
 const jobAlertRoutes = require("./routes/jobAlertRoutes");
 const walkinRoutes = require("./routes/walkin-routes");
-
+const jobIndustryRoutes = require("./routes/jobIndustryRoutes");
 
 
 
@@ -111,7 +111,7 @@ app.use("/api/chat", chatRoutes);
 app.use("/api/skill-categories", skillCategoryRoutes);
 app.use("/api/job-categories", jobCategoryRoutes);
 app.use("/api/company-categories", companyCategoryRoutes);
-
+app.use("/api/job-industries", jobIndustryRoutes);
 app.use("/api/candidates", candidateRoutes);
 app.use("/api/affordability", affordabilityRoutes);
 app.use("/api/admin/job-automation", jobAutomationRoutes);

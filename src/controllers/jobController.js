@@ -1,5 +1,14 @@
 const { Op, Sequelize, ValidationError } = require("sequelize");
-const { Job, Company, User, Location, Skill, JobFunction, JobCategory } = require("../models");
+const {
+    Job,
+    Company,
+    User,
+    Location,
+    Skill,
+    JobFunction,
+    JobCategory,
+    JobIndustry
+} = require("../models");
 const {
     getEmployerPlanFeatures,
     parseFeatureNumber,
@@ -165,6 +174,23 @@ exports.createJob = async (req, res) => {
         Object.keys(data).forEach((k) => {
             if (data[k] === "") data[k] = null;
         });
+
+        if (data.jobIndustryId) {
+            const jobIndustry = await JobIndustry.findByPk(data.jobIndustryId);
+
+            if (!jobIndustry) {
+                return res.status(400).json({ error: "Invalid job industry selected" });
+            }
+
+            if (jobIndustry.market && jobIndustry.market !== data.market) {
+                return res.status(400).json({
+                    error: "Selected industry belongs to a different market",
+                });
+            }
+
+            data.industry = jobIndustry.name;
+            data.jobIndustryId = Number(data.jobIndustryId);
+        }
 
         // Validate required fields
         if (!data.title || !data.description || !data.companyId || !data.locationId) {
@@ -378,17 +404,7 @@ exports.listJobs = async (req, res) => {
         if (req.query.educationLevel) where.educationLevel = req.query.educationLevel;
 
         // Industry filter with slug fallback (case-insensitive)
-        if (req.query.industry || req.query.industrySlug) {
-            const rawIndustry = req.query.industry || req.query.industrySlug;
-            const normalized = rawIndustry.replace(/-/g, " ").toLowerCase();
-            where[Op.and] = where[Op.and] || [];
-            where[Op.and].push(
-                Sequelize.where(
-                    Sequelize.fn("LOWER", Sequelize.col("industry")),
-                    { [Op.like]: `%${normalized}%` }
-                )
-            );
-        }
+        
 
         if (req.query.remote) where.remote = req.query.remote === "true";
         const minSalary = toNumber(req.query.minSalary || req.query.salaryMin);
@@ -435,8 +451,29 @@ exports.listJobs = async (req, res) => {
                 as: "poster",
                 attributes: ["id", "username", "email"],
             },
+            {
+                model: JobIndustry,
+                as: "jobIndustry",
+                attributes: ["id", "name", "slug"],
+            },
         ];
 
+        const industryFilter = req.query.industryId || req.query.industrySlug || req.query.industry;
+
+        if (industryFilter) {
+            if (req.query.industryId || /^\d+$/.test(String(industryFilter))) {
+                where.jobIndustryId = Number(industryFilter);
+            } else {
+                const industrySlug = String(industryFilter).trim().toLowerCase();
+
+                const jobIndustryInclude = include.find((item) => item.as === "jobIndustry");
+
+                if (jobIndustryInclude) {
+                    jobIndustryInclude.where = { slug: industrySlug };
+                    jobIndustryInclude.required = true;
+                }
+            }
+        }
         // Taxonomy filters
         const skillFilter = req.query.skillId || req.query.skillSlug;
         const functionFilter = req.query.functionId || req.query.functionSlug;
@@ -583,7 +620,11 @@ exports.listJobs = async (req, res) => {
             });
         }
 
-        const total = await Job.count({ where });
+        const total = await Job.count({
+            where,
+            include,
+            distinct: true,
+        });
         const FEATURED_CAP = 4;
         let featuredJobs = [];
         let featuredIds = [];
@@ -698,6 +739,11 @@ exports.getJob = async (req, res) => {
                 through: { attributes: [] },
             },
             {
+                model: JobIndustry,
+                as: "jobIndustry",
+                attributes: ["id", "name", "slug"],
+            },
+            {
                 model: JobFunction,
                 as: "functions",
                 attributes: ["id", "name", "slug", "parentId", "isFeatured"],
@@ -776,6 +822,22 @@ exports.updateJob = async (req, res) => {
             data.jobSubCategoryId = Number(data.jobSubCategoryId);
         }
 
+        if (data.jobIndustryId) {
+            const jobIndustry = await JobIndustry.findByPk(data.jobIndustryId);
+
+            if (!jobIndustry) {
+                return res.status(400).json({ error: "Invalid job industry selected" });
+            }
+
+            if ((data.market || job.market) && jobIndustry.market && jobIndustry.market !== (data.market || job.market)) {
+                return res.status(400).json({
+                    error: "Selected industry belongs to a different market",
+                });
+            }
+
+            data.industry = jobIndustry.name;
+            data.jobIndustryId = Number(data.jobIndustryId);
+        }
         // File upload (meta image)
         if (req.files?.metaImage) {
             data.metaImage = `/uploads/jobs/meta/${req.files.metaImage[0].filename}`;
@@ -909,6 +971,11 @@ exports.listJobsByCompany = async (req, res) => {
                     as: "company", // 👈 important alias
                     attributes: ["id", "name", "slug", "logoUrl", "industry"],
                 },
+                {
+                    model: JobIndustry,
+                    as: "jobIndustry",
+                    attributes: ["id", "name", "slug"],
+                },
                 { model: JobCategory, as: "jobCategory", attributes: ["id", "name", "slug"] },
                 { model: JobCategory, as: "jobSubCategory", attributes: ["id", "name", "slug"] },
             ],
@@ -948,6 +1015,11 @@ exports.getAllJobsAdmin = async (req, res) => {
                 {
                     model: JobCategory,
                     as: "jobCategory",
+                    attributes: ["id", "name", "slug"],
+                },
+                {
+                    model: JobIndustry,
+                    as: "jobIndustry",
                     attributes: ["id", "name", "slug"],
                 },
                 {

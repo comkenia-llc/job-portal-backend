@@ -25,6 +25,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: false,
       },
+      jobIndustryId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
       type: {
         type: DataTypes.ENUM(
           "full-time",

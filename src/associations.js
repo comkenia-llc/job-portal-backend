@@ -31,7 +31,7 @@ function applyAssociations(sequelize) {
         JobDedupFingerprint,
         WalkInInterview,
         WalkInInterviewRole,
-
+        JobIndustry,
 
     } = sequelize.models;
 
@@ -256,6 +256,15 @@ function applyAssociations(sequelize) {
             as: "createdWalkInInterviews",
         });
     }
+    Job.belongsTo(JobIndustry, {
+        foreignKey: "jobIndustryId",
+        as: "jobIndustry",
+    });
+
+    JobIndustry.hasMany(Job, {
+        foreignKey: "jobIndustryId",
+        as: "jobs",
+    });
 
     if (WalkInInterview && WalkInInterviewRole) {
         WalkInInterview.hasMany(WalkInInterviewRole, {
