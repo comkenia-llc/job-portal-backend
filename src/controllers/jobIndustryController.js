@@ -1,7 +1,13 @@
 "use strict";
 
 const { Op } = require("sequelize");
-const { JobIndustry, Job } = require("../models");
+const {
+    JobIndustry,
+    Job,
+    JobCategory,
+    Skill,
+    JobFunction,
+} = require("../models");
 
 const slugifyValue = (value) =>
     (value || "")
@@ -22,6 +28,67 @@ const parseJson = (value, fallback = null) => {
         return JSON.parse(value);
     } catch {
         return fallback;
+    }
+};
+
+const parseIdArray = (value) => {
+    if (!value) return [];
+    const raw = Array.isArray(value)
+        ? value
+        : typeof value === "string"
+            ? value.split(",")
+            : [];
+
+    return Array.from(
+        new Set(
+            raw
+                .map((item) => parseInt(item, 10))
+                .filter((item) => Number.isInteger(item) && item > 0)
+        )
+    );
+};
+
+const taxonomyIncludes = [
+    {
+        model: JobCategory,
+        as: "jobCategories",
+        attributes: ["id", "name", "slug", "parentId"],
+        through: { attributes: [] },
+        required: false,
+    },
+    {
+        model: Skill,
+        as: "skills",
+        attributes: ["id", "name", "slug", "categoryId", "category"],
+        through: { attributes: [] },
+        required: false,
+    },
+    {
+        model: JobFunction,
+        as: "jobFunctions",
+        attributes: ["id", "name", "slug", "parentId"],
+        through: { attributes: [] },
+        required: false,
+    },
+];
+
+const formatTaxonomy = (industry) => ({
+    categories: industry?.jobCategories || [],
+    skills: industry?.skills || [],
+    functions: industry?.jobFunctions || [],
+});
+
+const syncTaxonomy = async (industry, body) => {
+    if (body.categoryIds !== undefined && industry.setJobCategories) {
+        await industry.setJobCategories(parseIdArray(body.categoryIds));
+    }
+
+    if (body.skillIds !== undefined && industry.setSkills) {
+        await industry.setSkills(parseIdArray(body.skillIds));
+    }
+
+    if (body.functionIds !== undefined && industry.setJobFunctions) {
+        await industry.setJobFunctions(parseIdArray(body.functionIds));
     }
 };
 
@@ -140,7 +207,10 @@ exports.getIndustry = async (req, res) => {
             where.market = req.query.market.trim().toLowerCase();
         }
 
-        const industry = await JobIndustry.findOne({ where });
+        const industry = await JobIndustry.findOne({
+            where,
+            include: taxonomyIncludes,
+        });
 
         if (!industry) {
             return res.status(404).json({ error: "Job industry not found" });
@@ -158,6 +228,7 @@ exports.createIndustry = async (req, res) => {
         const payload = await normalizePayload(req.body);
 
         const industry = await JobIndustry.create(payload);
+        await syncTaxonomy(industry, req.body);
 
         res.status(201).json(industry);
     } catch (err) {
@@ -183,11 +254,50 @@ exports.updateIndustry = async (req, res) => {
         );
 
         await industry.update(payload);
+        await syncTaxonomy(industry, req.body);
 
         res.json(industry);
     } catch (err) {
         console.error("❌ updateIndustry error:", err);
         res.status(400).json({ error: err.message || "Failed to update job industry" });
+    }
+};
+
+exports.getIndustryTaxonomy = async (req, res) => {
+    try {
+        const industry = await JobIndustry.findByPk(req.params.id, {
+            include: taxonomyIncludes,
+        });
+
+        if (!industry) {
+            return res.status(404).json({ error: "Job industry not found" });
+        }
+
+        res.json(formatTaxonomy(industry));
+    } catch (err) {
+        console.error("❌ getIndustryTaxonomy error:", err);
+        res.status(500).json({ error: "Failed to fetch industry taxonomy" });
+    }
+};
+
+exports.updateIndustryTaxonomy = async (req, res) => {
+    try {
+        const industry = await JobIndustry.findByPk(req.params.id);
+
+        if (!industry) {
+            return res.status(404).json({ error: "Job industry not found" });
+        }
+
+        await syncTaxonomy(industry, req.body);
+
+        const updated = await JobIndustry.findByPk(industry.id, {
+            include: taxonomyIncludes,
+        });
+
+        res.json(formatTaxonomy(updated));
+    } catch (err) {
+        console.error("❌ updateIndustryTaxonomy error:", err);
+        res.status(400).json({ error: err.message || "Failed to update industry taxonomy" });
     }
 };
 

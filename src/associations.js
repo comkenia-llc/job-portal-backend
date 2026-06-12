@@ -32,6 +32,9 @@ function applyAssociations(sequelize) {
         WalkInInterview,
         WalkInInterviewRole,
         JobIndustry,
+        JobIndustryCategory,
+        JobIndustrySkill,
+        JobIndustryFunction,
 
     } = sequelize.models;
 
@@ -256,15 +259,62 @@ function applyAssociations(sequelize) {
             as: "createdWalkInInterviews",
         });
     }
-    Job.belongsTo(JobIndustry, {
-        foreignKey: "jobIndustryId",
-        as: "jobIndustry",
-    });
+    if (JobIndustry) {
+        Job.belongsTo(JobIndustry, {
+            foreignKey: "jobIndustryId",
+            as: "jobIndustry",
+        });
 
-    JobIndustry.hasMany(Job, {
-        foreignKey: "jobIndustryId",
-        as: "jobs",
-    });
+        JobIndustry.hasMany(Job, {
+            foreignKey: "jobIndustryId",
+            as: "jobs",
+        });
+
+        if (JobCategory && JobIndustryCategory) {
+            JobIndustry.belongsToMany(JobCategory, {
+                through: JobIndustryCategory,
+                as: "jobCategories",
+                foreignKey: "jobIndustryId",
+                otherKey: "jobCategoryId",
+            });
+            JobCategory.belongsToMany(JobIndustry, {
+                through: JobIndustryCategory,
+                as: "jobIndustries",
+                foreignKey: "jobCategoryId",
+                otherKey: "jobIndustryId",
+            });
+        }
+
+        if (Skill && JobIndustrySkill) {
+            JobIndustry.belongsToMany(Skill, {
+                through: JobIndustrySkill,
+                as: "skills",
+                foreignKey: "jobIndustryId",
+                otherKey: "skillId",
+            });
+            Skill.belongsToMany(JobIndustry, {
+                through: JobIndustrySkill,
+                as: "jobIndustries",
+                foreignKey: "skillId",
+                otherKey: "jobIndustryId",
+            });
+        }
+
+        if (JobFunction && JobIndustryFunction) {
+            JobIndustry.belongsToMany(JobFunction, {
+                through: JobIndustryFunction,
+                as: "jobFunctions",
+                foreignKey: "jobIndustryId",
+                otherKey: "jobFunctionId",
+            });
+            JobFunction.belongsToMany(JobIndustry, {
+                through: JobIndustryFunction,
+                as: "jobIndustries",
+                foreignKey: "jobFunctionId",
+                otherKey: "jobIndustryId",
+            });
+        }
+    }
 
     if (WalkInInterview && WalkInInterviewRole) {
         WalkInInterview.hasMany(WalkInInterviewRole, {
