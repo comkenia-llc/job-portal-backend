@@ -5,7 +5,16 @@ const jwt = require("jsonwebtoken");
 const { Op } = require("sequelize");
 const path = require("path");
 const { resolveRequestMarket } = require("../utils/market");
-const { sendTemplateMail, getSiteUrl } = require("../services/mailTemplateService");
+const {
+    sendTemplateMail,
+    getSiteUrl,
+    getCandidateDashboardUrl,
+    getCandidateAlertsUrl,
+    getCandidateProfileUrl,
+    getEmployerDashboardUrl,
+    getEmployerSettingsUrl,
+    getPostJobUrl,
+} = require("../services/mailTemplateService");
 const {
     ensureDefaultEmployerPlan,
     assignDefaultEmployerPlan,
@@ -23,9 +32,9 @@ const shouldPersistMarketPreference = (resolvedMarket) =>
 
 const EMAIL_VERIFICATION_CODE_LENGTH = 5;
 const EMAIL_VERIFICATION_EXPIRY_MINUTES = 10;
-const EMPLOYER_ONBOARDING_JOB_PATH = "/employer/post-job?onboarding=1";
+const EMPLOYER_DASHBOARD_PATH = "/companies/dashboard";
 const EMPLOYER_ONBOARDING_CREATE_COMPANY_PATH = `/companies/create?onboarding=1&redirect=${encodeURIComponent(
-    EMPLOYER_ONBOARDING_JOB_PATH
+    EMPLOYER_DASHBOARD_PATH
 )}`;
 
 const generateVerificationCode = () =>
@@ -110,7 +119,7 @@ const resolvePostAuthRedirect = (plainUser) => {
 
     if (plainUser.role === "employer") {
         return plainUser.company_id
-            ? EMPLOYER_ONBOARDING_JOB_PATH
+            ? EMPLOYER_DASHBOARD_PATH
             : EMPLOYER_ONBOARDING_CREATE_COMPANY_PATH;
     }
 
@@ -371,16 +380,16 @@ exports.verifyEmail = async (req, res) => {
             data: {
                 name: getUserDisplayName(user),
                 accountType: user.role || "candidate",
-                dashboardUrl: `${getSiteUrl()}/dashboard`,
-                employerDashboardUrl: `${getSiteUrl()}/dashboard/employer`,
+                dashboardUrl: getCandidateDashboardUrl(),
+                employerDashboardUrl: getEmployerDashboardUrl(),
                 jobsUrl: `${getSiteUrl()}/jobs`,
                 walkInUrl: `${getSiteUrl()}/walk-in-interviews`,
                 companiesUrl: `${getSiteUrl()}/companies`,
-                jobAlertsUrl: `${getSiteUrl()}/dashboard/alerts`,
-                profileUrl: `${getSiteUrl()}/dashboard/profile`,
+                jobAlertsUrl: getCandidateAlertsUrl(),
+                profileUrl: getCandidateProfileUrl(),
                 resumeBuilderUrl: `${getSiteUrl()}/dashboard/resumes/builder`,
-                postJobUrl: `${getSiteUrl()}/dashboard/employer/jobs/new`,
-                companyProfileUrl: `${getSiteUrl()}/dashboard/employer/company`,
+                postJobUrl: getPostJobUrl(),
+                companyProfileUrl: getEmployerSettingsUrl(),
             },
         }).catch((mailErr) =>
             console.warn("⚠️ [MAILER] Welcome email failed:", mailErr.message)

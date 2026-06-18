@@ -1,7 +1,12 @@
 const { Application, Job, Resume, Company } = require("../models");
 const { User } = require("../models");
 const { Op } = require("sequelize");
-const { sendTemplateMail, getSiteUrl } = require("../services/mailTemplateService");
+const {
+    sendTemplateMail,
+    getSiteUrl,
+    getCandidateApplicationsUrl,
+    getEmployerApplicantsUrl,
+} = require("../services/mailTemplateService");
 
 const formatSalaryText = (job) => {
     if (!job?.salaryMin && !job?.salaryMax) {
@@ -93,8 +98,8 @@ exports.applyToJob = async (req, res) => {
         const companyUrl = job.company?.slug
             ? `${siteUrl}/companies/${job.company.slug}`
             : `${siteUrl}/companies`;
-        const applicationUrl = `${siteUrl}/dashboard/applications`;
-        const employerApplicationUrl = `${siteUrl}/dashboard/employer/applications`;
+        const applicationUrl = getCandidateApplicationsUrl();
+        const employerApplicationUrl = getEmployerApplicantsUrl();
 
         if (candidate?.email) {
             sendTemplateMail({

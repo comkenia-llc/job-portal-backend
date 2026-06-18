@@ -47,6 +47,15 @@ const getSupportEmail = () =>
     "support@dubaijobzone.com";
 
 const getMailLogoUrl = () => process.env.MAIL_LOGO_URL || "";
+const getCandidateDashboardUrl = () => `${getSiteUrl()}/dashboard`;
+const getCandidateApplicationsUrl = () => `${getSiteUrl()}/dashboard/applications`;
+const getCandidateAlertsUrl = () => `${getSiteUrl()}/dashboard/alerts`;
+const getCandidateProfileUrl = () => `${getSiteUrl()}/dashboard/settings?tab=profile`;
+const getCandidateSavedJobsUrl = () => `${getSiteUrl()}/dashboard/saved`;
+const getEmployerDashboardUrl = () => `${getSiteUrl()}/companies/dashboard`;
+const getEmployerApplicantsUrl = () => `${getSiteUrl()}/companies/dashboard/applicants`;
+const getEmployerSettingsUrl = () => `${getSiteUrl()}/companies/dashboard/settings`;
+const getPostJobUrl = () => `${getSiteUrl()}/employer/post-job`;
 
 const renderTemplate = (templateName, data = {}) => {
     const template = templateRegistry[templateName];
@@ -86,4 +95,13 @@ module.exports = {
     getSiteUrl,
     getSupportEmail,
     getMailLogoUrl,
+    getCandidateDashboardUrl,
+    getCandidateApplicationsUrl,
+    getCandidateAlertsUrl,
+    getCandidateProfileUrl,
+    getCandidateSavedJobsUrl,
+    getEmployerDashboardUrl,
+    getEmployerApplicantsUrl,
+    getEmployerSettingsUrl,
+    getPostJobUrl,
 };
