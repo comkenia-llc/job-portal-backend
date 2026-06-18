@@ -8,6 +8,8 @@ const upload = require("../middlewares/upload");
 router.post("/register", userController.register);
 router.post("/login", userController.login);
 router.post("/logout", userController.logout);
+router.post("/verify-email", userController.verifyEmail);
+router.post("/resend-verification-code", userController.resendVerificationCode);
 // Authenticated
 router.get("/me", authMiddleware, userController.me);
 router.put("/me/profile",  authMiddleware, userController.updateProfile);

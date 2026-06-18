@@ -81,7 +81,7 @@ const serializeGuide = (guide) => {
 exports.listPublishedGuides = async (req, res) => {
     try {
         const page = parseInt(req.query.page || "1", 10);
-        const limit = parseInt(req.query.limit || "12", 10);
+        const limit = Math.min(Math.max(parseInt(req.query.limit || "12", 10), 1), 50);
         const offset = (page - 1) * limit;
         const search = (req.query.search || "").trim();
         const type = (req.query.type || "").trim();
@@ -209,7 +209,7 @@ exports.previewGuideByTypeAndSlug = async (req, res) => {
 exports.listAllGuides = async (req, res) => {
     try {
         const page = parseInt(req.query.page || "1", 10);
-        const limit = parseInt(req.query.limit || "20", 10);
+        const limit = Math.min(Math.max(parseInt(req.query.limit || "20", 10), 1), 50);
         const offset = (page - 1) * limit;
         const search = (req.query.search || "").trim();
         const type = (req.query.type || "").trim();

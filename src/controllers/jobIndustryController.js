@@ -148,7 +148,7 @@ exports.listIndustries = async (req, res) => {
         const { search = "", status, isFeatured, market, includeGlobal, page = 1, limit = 100 } = req.query;
 
         const pageNum = Math.max(parseInt(page, 10) || 1, 1);
-        const limitNum = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
+        const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 50);
         const offset = (pageNum - 1) * limitNum;
 
         const where = {};

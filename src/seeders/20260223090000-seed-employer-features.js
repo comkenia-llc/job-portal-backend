@@ -6,6 +6,7 @@ module.exports = {
         const features = [
             {
                 key: "can_post_jobs",
+                market: "global",
                 label: "Can post jobs",
                 audience: "employer",
                 type: "boolean",
@@ -18,6 +19,7 @@ module.exports = {
             },
             {
                 key: "max_jobs",
+                market: "global",
                 label: "Max jobs",
                 audience: "employer",
                 type: "number",
@@ -30,6 +32,7 @@ module.exports = {
             },
             {
                 key: "can_message_candidates",
+                market: "global",
                 label: "Can message candidates",
                 audience: "employer",
                 type: "boolean",
@@ -42,6 +45,7 @@ module.exports = {
             },
             {
                 key: "max_messages_day",
+                market: "global",
                 label: "Max messages per day",
                 audience: "employer",
                 type: "number",
@@ -54,6 +58,7 @@ module.exports = {
             },
             {
                 key: "can_view_candidates",
+                market: "global",
                 label: "Can view candidates",
                 audience: "employer",
                 type: "boolean",
@@ -66,6 +71,7 @@ module.exports = {
             },
             {
                 key: "can_view_resumes",
+                market: "global",
                 label: "Can view resumes",
                 audience: "employer",
                 type: "boolean",
@@ -78,6 +84,7 @@ module.exports = {
             },
             {
                 key: "can_download_resumes",
+                market: "global",
                 label: "Can download resumes",
                 audience: "employer",
                 type: "boolean",
@@ -90,6 +97,7 @@ module.exports = {
             },
             {
                 key: "can_access_analytics",
+                market: "global",
                 label: "Can access analytics",
                 audience: "employer",
                 type: "boolean",
@@ -102,6 +110,7 @@ module.exports = {
             },
             {
                 key: "can_feature_jobs",
+                market: "global",
                 label: "Can feature jobs",
                 audience: "employer",
                 type: "boolean",
@@ -114,6 +123,7 @@ module.exports = {
             },
             {
                 key: "featured_jobs_limit",
+                market: "global",
                 label: "Featured jobs limit",
                 audience: "employer",
                 type: "number",
@@ -129,6 +139,7 @@ module.exports = {
         await queryInterface.bulkInsert("features", features, {
             updateOnDuplicate: [
                 "audience",
+                "market",
                 "label",
                 "type",
                 "input_type",

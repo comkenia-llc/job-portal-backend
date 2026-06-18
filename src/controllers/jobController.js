@@ -346,7 +346,7 @@ exports.createJob = async (req, res) => {
 exports.listJobs = async (req, res) => {
     try {
         const page = parseInt(req.query.page || "1", 10);
-        const limit = parseInt(req.query.limit || "10", 10);
+        const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 50);
         const offset = (page - 1) * limit;
 
         // ✅ Start with an empty where object
@@ -960,6 +960,7 @@ exports.deleteJob = async (req, res) => {
 exports.listJobsByCompany = async (req, res) => {
     try {
         const companyId = req.params.companyId;
+        const limit = Math.min(Math.max(parseInt(req.query.limit || "20", 10), 1), 50);
         const jobs = await Job.findAll({
             where: applyMarketScope({ companyId }, req, {
                 allowAdminOverride: true,
@@ -980,6 +981,7 @@ exports.listJobsByCompany = async (req, res) => {
                 { model: JobCategory, as: "jobSubCategory", attributes: ["id", "name", "slug"] },
             ],
             order: [["createdAt", "DESC"]],
+            limit,
         });
         res.json(jobs);
     } catch (err) {
@@ -991,7 +993,8 @@ exports.listJobsByCompany = async (req, res) => {
 exports.getAllJobsAdmin = async (req, res) => {
     try {
         const { page = 1, limit = 12, search = "" } = req.query;
-        const offset = (page - 1) * limit;
+        const limitNum = Math.min(Math.max(parseInt(limit, 10) || 12, 1), 200);
+        const offset = (page - 1) * limitNum;
 
         const where = applyMarketScope({}, req, {
             allowAdminOverride: true,
@@ -1035,13 +1038,13 @@ exports.getAllJobsAdmin = async (req, res) => {
             ],
             order: [["createdAt", "DESC"]],
             offset,
-            limit: parseInt(limit),
+            limit: limitNum,
         });
 
         res.json({
             jobs: rows,
             total: count,
-            totalPages: Math.ceil(count / limit),
+            totalPages: Math.ceil(count / limitNum),
             page: parseInt(page),
         });
     } catch (err) {

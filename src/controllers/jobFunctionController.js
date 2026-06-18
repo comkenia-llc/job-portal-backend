@@ -83,7 +83,7 @@ const normalizePayload = async (body, existingId = null) => {
 exports.listFunctions = async (req, res) => {
     try {
         const { search, isFeatured, page = 1, limit = 50 } = req.query;
-        const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+        const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 50);
         const pageNum = Math.max(parseInt(page, 10) || 1, 1);
         const offset = (pageNum - 1) * limitNum;
 

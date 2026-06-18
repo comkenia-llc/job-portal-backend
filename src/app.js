@@ -3,7 +3,9 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const path = require("path");
+const rateLimit = require("express-rate-limit");
 require("dotenv").config();
+
 const cookieParser = require("cookie-parser");
 const subscriptionController = require("./controllers/subscriptionController");
 const { isAllowedOrigin } = require("./utils/market");
@@ -18,6 +20,7 @@ app.use(
     cors({
         origin: function (origin, callback) {
             if (!origin) return callback(null, true);
+
             if (isAllowedOrigin(origin)) {
                 callback(null, true);
             } else {
@@ -25,7 +28,7 @@ app.use(
                 callback(new Error("Not allowed by CORS"));
             }
         },
-        credentials: true, // ✅ allow cookies for SSO
+        credentials: true,
         methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allowedHeaders: ["Content-Type", "Authorization", "X-Market", "x-market"],
     })
@@ -34,22 +37,64 @@ app.use(
 // ====================================================
 // 🧩 Middleware
 // ====================================================
-// Stripe webhook (needs raw body)
+// Stripe webhook needs raw body before express.json()
 app.post(
     "/api/subscriptions/webhook",
     express.raw({ type: "application/json" }),
     subscriptionController.stripeWebhook
 );
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser()); // ✅ Add here
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+app.use(cookieParser());
 app.use(marketMiddleware);
 app.use(morgan("dev"));
 
+// ====================================================
+// 🛡️ Rate Limiters
+// ====================================================
+const publicApiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests. Please try again later." },
+});
 
-// Serve uploaded files
-app.use("/uploads", express.static(path.join(__dirname, "./uploads")));
+const searchApiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many search requests. Please slow down." },
+});
+
+const authApiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many attempts. Please try again later." },
+});
+
+const aiApiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many AI requests. Please try again later." },
+});
+
+// ====================================================
+// 📁 Static Uploads
+// ====================================================
+app.use(
+    "/uploads",
+    express.static(path.join(__dirname, "./uploads"), {
+        maxAge: "7d",
+        immutable: true,
+    })
+);
 
 // ====================================================
 // 📦 Routes
@@ -84,9 +129,33 @@ const jobAutomationRoutes = require("./routes/jobAutomationRoutes");
 const jobAlertRoutes = require("./routes/jobAlertRoutes");
 const walkinRoutes = require("./routes/walkin-routes");
 const jobIndustryRoutes = require("./routes/jobIndustryRoutes");
+const mailRoutes = require("./routes/mailRoutes");
 
+// ====================================================
+// 🛡️ Apply Rate Limits Before Routes
+// ====================================================
+app.use("/api/jobs", publicApiLimiter);
+app.use("/api/companies", publicApiLimiter);
+app.use("/api/locations", publicApiLimiter);
+app.use("/api/guides", publicApiLimiter);
+app.use("/api/blog", publicApiLimiter);
+app.use("/api/walkin", publicApiLimiter);
+app.use("/api/affordability", publicApiLimiter);
 
+app.use("/api/skills", searchApiLimiter);
+app.use("/api/job-functions", searchApiLimiter);
+app.use("/api/job-categories", searchApiLimiter);
+app.use("/api/company-categories", searchApiLimiter);
+app.use("/api/job-industries", searchApiLimiter);
 
+app.use("/api/ai", aiApiLimiter);
+
+app.use("/api/users/login", authApiLimiter);
+app.use("/api/users/register", authApiLimiter);
+
+// ====================================================
+// 🚦 Route Mounting
+// ====================================================
 app.use("/api/users", userRoutes);
 app.use("/api/jobs", jobRoutes);
 app.use("/api/companies", companyRoutes);
@@ -115,8 +184,10 @@ app.use("/api/job-industries", jobIndustryRoutes);
 app.use("/api/candidates", candidateRoutes);
 app.use("/api/affordability", affordabilityRoutes);
 app.use("/api/admin/job-automation", jobAutomationRoutes);
+app.use("/api/mail", mailRoutes);
 app.use("/api/job-alerts", jobAlertRoutes);
 app.use("/api/walkin", walkinRoutes);
+
 // ====================================================
 // 🏠 Root
 // ====================================================
@@ -129,7 +200,9 @@ app.get("/", (req, res) => {
 // ====================================================
 app.use((err, req, res, next) => {
     console.error("❌ Error:", err);
-    res.status(500).json({ error: err.message || "Internal Server Error" });
+    res.status(err.status || 500).json({
+        error: err.message || "Internal Server Error",
+    });
 });
 
 module.exports = app;

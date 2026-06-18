@@ -68,7 +68,7 @@ exports.listCategories = async (req, res) => {
                 ["isFeatured", "DESC"],
                 ["name", "ASC"],
             ],
-            limit: Math.min(parseInt(limit, 10) || 200, 500),
+            limit: Math.min(Math.max(parseInt(limit, 10) || 50, 1), 50),
         });
         res.json(categories);
     } catch (err) {

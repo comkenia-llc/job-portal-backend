@@ -6,7 +6,11 @@ module.exports = (sequelize, DataTypes) => {
             key: {
                 type: DataTypes.STRING(100),
                 allowNull: false,
-                unique: true,
+            },
+            market: {
+                type: DataTypes.STRING,
+                allowNull: false,
+                defaultValue: "global",
             },
             audience: {
                 type: DataTypes.ENUM("employer", "candidate"),
@@ -46,6 +50,13 @@ module.exports = (sequelize, DataTypes) => {
         },
         {
             tableName: "features",
+            indexes: [
+                {
+                    unique: true,
+                    fields: ["key", "market"],
+                    name: "features_key_market_unique_idx",
+                },
+            ],
         }
     );
 

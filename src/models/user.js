@@ -25,6 +25,8 @@ module.exports = (sequelize, DataTypes) => {
 
     status: { type: DataTypes.ENUM('active', 'suspended', 'pending'), defaultValue: 'active' },
     emailVerified: { type: DataTypes.BOOLEAN, defaultValue: false },
+    emailVerificationCodeHash: { type: DataTypes.STRING, allowNull: true },
+    emailVerificationCodeExpiresAt: { type: DataTypes.DATE, allowNull: true },
     lastLogin: DataTypes.DATE,
     googleId: DataTypes.STRING,
     facebookId: DataTypes.STRING,

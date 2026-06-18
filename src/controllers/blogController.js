@@ -219,7 +219,7 @@ exports.deletePost = async (req, res) => {
 exports.listPublishedPosts = async (req, res) => {
     try {
         const page = parseInt(req.query.page || "1", 10);
-        const limit = parseInt(req.query.limit || "9", 10);
+        const limit = Math.min(Math.max(parseInt(req.query.limit || "9", 10), 1), 50);
         const offset = (page - 1) * limit;
         const search = (req.query.search || "").trim();
 
@@ -262,7 +262,7 @@ exports.listPublishedPosts = async (req, res) => {
 exports.listMyPosts = async (req, res) => {
     try {
         const page = parseInt(req.query.page || "1", 10);
-        const limit = parseInt(req.query.limit || "10", 10);
+        const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 50);
         const offset = (page - 1) * limit;
         const search = (req.query.search || "").trim();
 

@@ -7,7 +7,7 @@ const {
     Interview,
     Company
 } = require("../models");
-const { sendMail } = require("../utils/mailer");
+const { sendTemplateMail, getSiteUrl } = require("../services/mailTemplateService");
 const { applyMarketScope } = require("../utils/market");
 const { assertEmployerMarketAccess } = require("../utils/marketAccess");
 
@@ -175,7 +175,7 @@ exports.updateApplicationStatus = async (req, res) => {
 
         const application = await Application.findByPk(id, {
             include: [
-                { model: Job, as: "job", attributes: ["id", "title", "companyId", "slug"] },
+                { model: Job, as: "job", attributes: ["id", "title", "companyId", "slug", "location"] },
                 { model: User, as: "candidate", attributes: ["id", "email", "firstName", "lastName"] },
             ],
         });
@@ -185,6 +185,7 @@ exports.updateApplicationStatus = async (req, res) => {
             return res.status(403).json({ error: "Not allowed to update this application" });
         }
 
+        const previousStatus = application.status;
         application.status = status;
         application.stageUpdatedAt = new Date();
         if (note) application.notes = note;
@@ -206,10 +207,21 @@ exports.updateApplicationStatus = async (req, res) => {
                 application.candidate.firstName || application.candidate.lastName
                     ? `${application.candidate.firstName || ""} ${application.candidate.lastName || ""}`.trim()
                     : application.candidate.email;
-            sendMail({
+            const siteUrl = getSiteUrl();
+            sendTemplateMail({
+                template: "applicationStatusUpdated",
                 to: application.candidate.email,
-                subject: `Your application status changed to ${status}`,
-                text: `Hi ${candidateName},\n\nYour application for "${application.job.title}" was updated to "${status}".\n\n${note ? `Note: ${note}\n\n` : ""}Thank you,\n${process.env.SMTP_FROM || "Keekan Jobs"}`,
+                data: {
+                    candidateName,
+                    status,
+                    previousStatus,
+                    jobTitle: application.job.title,
+                    companyName: "",
+                    location: application.job.location || "",
+                    applicationUrl: `${siteUrl}/dashboard/applications`,
+                    employerMessage: note || "",
+                    updatedAt: application.stageUpdatedAt,
+                },
             }).catch((err) => console.warn("⚠️ [MAILER] Status email failed:", err.message));
         }
 
@@ -279,7 +291,7 @@ exports.scheduleInterview = async (req, res) => {
 
         const application = await Application.findByPk(id, {
             include: [
-                { model: Job, as: "job", attributes: ["id", "title", "companyId"] },
+                { model: Job, as: "job", attributes: ["id", "title", "companyId", "location"] },
                 { model: User, as: "candidate", attributes: ["id", "email", "firstName", "lastName"] },
             ],
         });
@@ -288,6 +300,8 @@ exports.scheduleInterview = async (req, res) => {
         if (req.user.role !== "admin" && application.job.companyId !== companyId) {
             return res.status(403).json({ error: "Not allowed to schedule for this application" });
         }
+
+        const previousStatus = application.status;
 
         const interview = await Interview.create({
             applicationId: application.id,
@@ -336,10 +350,21 @@ exports.scheduleInterview = async (req, res) => {
                 .filter(Boolean)
                 .join("\n");
 
-            sendMail({
+            const siteUrl = getSiteUrl();
+            sendTemplateMail({
+                template: "applicationStatusUpdated",
                 to: application.candidate.email,
-                subject: `Interview scheduled for ${application.job.title}`,
-                text: `Hi ${candidateName},\n\nYou've been invited to an interview.\n\n${details}\n\nThank you,\n${process.env.SMTP_FROM || "Keekan Jobs"}`,
+                data: {
+                    candidateName,
+                    status: "interview",
+                    previousStatus,
+                    jobTitle: application.job.title,
+                    companyName: "",
+                    location: location || application.job.location || "",
+                    applicationUrl: `${siteUrl}/dashboard/applications`,
+                    employerMessage: details,
+                    updatedAt: application.stageUpdatedAt,
+                },
             }).catch((err) => console.warn("⚠️ [MAILER] Interview email failed:", err.message));
         }
 

@@ -2,22 +2,51 @@ const { CompanySubscription, CandidateSubscription, Plan, Company, User } = requ
 const { Op } = require("sequelize");
 const bcrypt = require("bcrypt");
 const { nanoid } = require("nanoid");
+const { assignDefaultEmployerPlan } = require("../services/employerPlanService");
+const { resolveRequestMarket, applyMarketScope } = require("../utils/market");
+const { getCurrencyForMarket } = require("../utils/marketCatalog");
 const stripeSecret = process.env.STRIPE_SECRET_KEY;
 const stripe = stripeSecret ? require("stripe")(stripeSecret) : null;
 
+const normalizeStripeKeyPart = (value = "") =>
+    String(value || "")
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+
+const buildStripeKeyCandidates = (plan) => {
+    if (!plan) return [];
+
+    const slug = normalizeStripeKeyPart(plan.slug);
+    const name = normalizeStripeKeyPart(plan.name);
+    const audience = normalizeStripeKeyPart(plan.audience);
+    const rawCandidates = [
+        slug,
+        name,
+        slug && audience ? `${audience}_${slug}` : "",
+        name && audience ? `${audience}_${name}` : "",
+    ].filter(Boolean);
+
+    return [...new Set(rawCandidates)];
+};
+
 const resolvePriceId = (plan, billingCycle = "monthly") => {
-    if (!plan || !plan.slug) return null;
-    const normalizedSlug = plan.slug.toUpperCase().replace(/-/g, "_");
+    const candidates = buildStripeKeyCandidates(plan);
+    if (!candidates.length) return null;
     const suffix = billingCycle === "yearly" ? "_YEARLY" : "_MONTHLY";
 
-    // Primary: cycle-specific key
-    const primaryKey = `STRIPE_PRICE_${normalizedSlug}${suffix}`;
-    if (process.env[primaryKey]) return process.env[primaryKey];
+    for (const candidate of candidates) {
+        const primaryKey = `STRIPE_PRICE_${candidate}${suffix}`;
+        if (process.env[primaryKey]) return process.env[primaryKey];
+    }
 
     // Legacy/fallback: no cycle suffix (treated as monthly)
     if (billingCycle === "monthly") {
-        const legacyKey = `STRIPE_PRICE_${normalizedSlug}`;
-        if (process.env[legacyKey]) return process.env[legacyKey];
+        for (const candidate of candidates) {
+            const legacyKey = `STRIPE_PRICE_${candidate}`;
+            if (process.env[legacyKey]) return process.env[legacyKey];
+        }
     }
 
     return null;
@@ -28,6 +57,35 @@ const frontendBase =
     process.env.NEXT_PUBLIC_FRONT_URL ||
     "http://localhost:3000";
 
+const resolvePlanWhere = (slug, audience, market) => {
+    const where = {
+        slug,
+        ...(audience ? { audience } : {}),
+    };
+
+    if (!market || market === "global") {
+        where.market = "global";
+        return where;
+    }
+
+    where.market = {
+        [Op.in]: [market, "global"],
+    };
+    return where;
+};
+
+const resolvePlanBySlug = async ({ slug, audience, market }) => {
+    if (!slug) return null;
+
+    const plans = await Plan.findAll({
+        where: resolvePlanWhere(slug, audience, market),
+        order: [["id", "ASC"]],
+    });
+
+    if (!plans.length) return null;
+    return plans.find((plan) => plan.market === market) || plans[0];
+};
+
 // ============================
 // 🟢 Admin: Assign/Subscribe Plan to Company
 // ============================
@@ -35,6 +93,37 @@ exports.createSubscription = async (req, res) => {
     try {
         const { company_id, plan_id, start_date, end_date, renewal_method, payment_method, payment_reference, notes } =
             req.body;
+
+        const [company, plan] = await Promise.all([
+            Company.findByPk(company_id, { attributes: ["id", "name", "market"] }),
+            Plan.findByPk(plan_id, { attributes: ["id", "name", "market", "audience"] }),
+        ]);
+
+        if (!company) {
+            return res.status(404).json({ message: "Company not found" });
+        }
+        if (!plan) {
+            return res.status(404).json({ message: "Plan not found" });
+        }
+        if (plan.audience && plan.audience !== "employer") {
+            return res.status(400).json({ message: "Only employer plans can be assigned to companies" });
+        }
+        if (plan.market !== "global" && company.market && plan.market !== company.market) {
+            return res.status(400).json({ message: "Selected plan does not match the company's market" });
+        }
+
+        const scopedCompanyWhere = applyMarketScope({ id: company_id }, req, {
+            allowAdminOverride: true,
+            allowExplicitOverride: true,
+            allowAllForAdmin: true,
+        });
+        const scopedCompany = await Company.findOne({
+            where: scopedCompanyWhere,
+            attributes: ["id"],
+        });
+        if (!scopedCompany) {
+            return res.status(404).json({ message: "Company is not available in the selected market" });
+        }
 
         const subscription = await CompanySubscription.create({
             company_id,
@@ -62,12 +151,21 @@ exports.getAllSubscriptions = async (req, res) => {
     try {
         const where = {};
         if (req.query.status) where.status = req.query.status;
+        const resolvedMarket = resolveRequestMarket(req, {
+            allowAdminOverride: true,
+            allowExplicitOverride: true,
+            allowAllForAdmin: true,
+        }).market;
 
         const subscriptions = await CompanySubscription.findAll({
             where,
             include: [
-                { model: Plan, attributes: ["id", "name", "price_monthly", "slug"] },
-                { model: Company, attributes: ["id", "name", "email"] },
+                { model: Plan, attributes: ["id", "name", "price_monthly", "slug", "market", "currency"] },
+                {
+                    model: Company,
+                    attributes: ["id", "name", "email", "market"],
+                    ...(resolvedMarket ? { where: { market: resolvedMarket } } : {}),
+                },
             ],
             order: [["id", "DESC"]],
         });
@@ -101,7 +199,7 @@ exports.getCompanySubscription = async (req, res) => {
             return res.status(404).json({ message: "No company linked to this account" });
         }
 
-        const subscription = await CompanySubscription.findOne({
+        let subscription = await CompanySubscription.findOne({
             where: {
                 company_id: companyId,
                 status: "active",
@@ -109,15 +207,35 @@ exports.getCompanySubscription = async (req, res) => {
                     [Op.or]: [{ [Op.gt]: new Date() }, { [Op.is]: null }],
                 },
             },
-            include: [{ model: Plan, attributes: ["id", "name", "features", "price_monthly", "slug"] }],
+            include: [{ model: Plan, attributes: ["id", "name", "features", "price_monthly", "price_yearly", "currency", "description", "slug"] }],
         });
+
+        if (!subscription && req.user.role === "employer") {
+            await assignDefaultEmployerPlan(companyId);
+            subscription = await CompanySubscription.findOne({
+                where: {
+                    company_id: companyId,
+                    status: "active",
+                    end_date: {
+                        [Op.or]: [{ [Op.gt]: new Date() }, { [Op.is]: null }],
+                    },
+                },
+                include: [{ model: Plan, attributes: ["id", "name", "features", "price_monthly", "price_yearly", "currency", "description", "slug"] }],
+            });
+        }
 
         if (!subscription || !subscription.Plan) {
             return res.status(404).json({ message: "No active plan found for this company." });
         }
 
         res.json({
+            plan_id: subscription.Plan?.id || null,
             plan: subscription.Plan?.name || null,
+            plan_slug: subscription.Plan?.slug || null,
+            plan_description: subscription.Plan?.description || null,
+            plan_price_monthly: subscription.Plan?.price_monthly ?? null,
+            plan_price_yearly: subscription.Plan?.price_yearly ?? null,
+            plan_currency: subscription.Plan?.currency || null,
             features: subscription.Plan?.features || {},
             start_date: subscription.start_date,
             end_date: subscription.end_date,
@@ -146,7 +264,17 @@ exports.subscribeSelf = async (req, res) => {
         }
 
         // Ensure plan exists
-        const plan = await Plan.findByPk(plan_id);
+        const requestedMarket = resolveRequestMarket(req, {
+            allowAdminOverride: true,
+            allowExplicitOverride: true,
+            allowAllForAdmin: true,
+        }).market;
+        const plan = await Plan.findOne({
+            where: {
+                id: plan_id,
+                ...(requestedMarket ? { market: { [Op.in]: [requestedMarket, "global"] } } : {}),
+            },
+        });
         if (!plan) return res.status(404).json({ message: "Plan not found" });
 
         // Prevent duplicate active sub
@@ -208,10 +336,17 @@ exports.createCheckoutSession = async (req, res) => {
             return res.status(400).json({ message: "No company linked to this account" });
         }
 
+        const requestedMarket = resolveRequestMarket(req, {
+            allowExplicitOverride: true,
+        }).market;
         const { plan_slug, success_url, cancel_url, billing_cycle = "monthly" } = req.body;
         if (!plan_slug) return res.status(400).json({ message: "plan_slug is required" });
 
-        const plan = await Plan.findOne({ where: { slug: plan_slug } });
+        const plan = await resolvePlanBySlug({
+            slug: plan_slug,
+            audience: "employer",
+            market: requestedMarket,
+        });
         if (!plan) return res.status(404).json({ message: "Plan not found" });
 
         const priceId = resolvePriceId(plan, billing_cycle);
@@ -239,6 +374,7 @@ exports.createCheckoutSession = async (req, res) => {
                 companyId: companyId || "",
                 planId: plan.id,
                 planSlug: plan.slug,
+                market: plan.market || requestedMarket || "global",
                 billingCycle: billing_cycle,
             },
             subscription_data: {
@@ -247,6 +383,7 @@ exports.createCheckoutSession = async (req, res) => {
                     companyId: companyId || "",
                     planId: plan.id,
                     planSlug: plan.slug,
+                    market: plan.market || requestedMarket || "global",
                     billingCycle: billing_cycle,
                 },
             },
@@ -267,18 +404,27 @@ exports.createCheckoutSession = async (req, res) => {
 exports.createCandidateCheckoutSession = async (req, res) => {
     try {
         if (!stripe) return res.status(500).json({ message: "Stripe is not configured" });
+        const requestedMarket = resolveRequestMarket(req, {
+            allowExplicitOverride: true,
+        }).market;
         const { plan_slug, success_url, cancel_url, billing_cycle = "monthly" } = req.body;
         if (!plan_slug) {
             return res.status(400).json({ message: "plan_slug is required" });
         }
 
-        let plan = await Plan.findOne({ where: { slug: plan_slug } });
+        let plan = await resolvePlanBySlug({
+            slug: plan_slug,
+            audience: "candidate",
+            market: requestedMarket,
+        });
         if (!plan) {
             plan = await Plan.create({
                 name: plan_slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
                 slug: plan_slug,
+                market: requestedMarket || "global",
+                audience: "candidate",
                 price_monthly: 0,
-                currency: "USD",
+                currency: getCurrencyForMarket(requestedMarket || "global"),
                 duration_type: "monthly",
                 features: {},
                 description: "Auto-created from checkout",
@@ -304,6 +450,7 @@ exports.createCandidateCheckoutSession = async (req, res) => {
                 userId: req.user?.id || "",
                 planId: plan.id,
                 planSlug: plan.slug,
+                market: plan.market || requestedMarket || "global",
                 billingCycle: billing_cycle,
             },
             subscription_data: {
@@ -312,6 +459,7 @@ exports.createCandidateCheckoutSession = async (req, res) => {
                     userId: req.user?.id || "",
                     planId: plan.id,
                     planSlug: plan.slug,
+                    market: plan.market || requestedMarket || "global",
                     billingCycle: billing_cycle,
                 },
             },
@@ -391,18 +539,27 @@ exports.stripeWebhook = async (req, res) => {
         const planId = meta.planId;
         const planSlug = meta.planSlug;
         const companyId = meta.companyId;
+        const market = meta.market || null;
         const role = meta.role || (companyId ? "employer" : "candidate");
 
         try {
             let plan = null;
             if (planId) plan = await Plan.findByPk(planId);
-            if (!plan && planSlug) plan = await Plan.findOne({ where: { slug: planSlug } });
+            if (!plan && planSlug) {
+                plan = await resolvePlanBySlug({
+                    slug: planSlug,
+                    audience: role === "candidate" ? "candidate" : "employer",
+                    market,
+                });
+            }
             if (!plan && planSlug) {
                 plan = await Plan.create({
                     name: planSlug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
                     slug: planSlug,
+                    market: market || "global",
+                    audience: role === "candidate" ? "candidate" : "employer",
                     price_monthly: 0,
-                    currency: "USD",
+                    currency: getCurrencyForMarket(market || "global"),
                     duration_type: "monthly",
                     features: {},
                     description: "Auto-created from checkout (webhook)",

@@ -1,6 +1,21 @@
 const { Application, Job, Resume, Company } = require("../models");
 const { User } = require("../models");
 const { Op } = require("sequelize");
+const { sendTemplateMail, getSiteUrl } = require("../services/mailTemplateService");
+
+const formatSalaryText = (job) => {
+    if (!job?.salaryMin && !job?.salaryMax) {
+        return "";
+    }
+
+    const currency = job.currency || "AED";
+
+    if (job.salaryMin && job.salaryMax) {
+        return `${currency} ${job.salaryMin} - ${job.salaryMax}`;
+    }
+
+    return `${currency} ${job.salaryMin || job.salaryMax}`;
+};
 
 const findResumeForUser = async (userId, preferredId) => {
     if (preferredId) {
@@ -31,7 +46,21 @@ exports.applyToJob = async (req, res) => {
             return res.status(400).json({ error: "Missing jobId" });
         }
 
-        const job = await Job.findByPk(jobId);
+        const job = await Job.findByPk(jobId, {
+            include: [
+                {
+                    model: Company,
+                    as: "company",
+                    attributes: ["id", "name", "slug", "email"],
+                },
+                {
+                    model: User,
+                    as: "poster",
+                    attributes: ["id", "email", "firstName", "lastName", "username"],
+                    required: false,
+                },
+            ],
+        });
         if (!job) {
             return res.status(404).json({ error: "Job not found" });
         }
@@ -54,6 +83,75 @@ exports.applyToJob = async (req, res) => {
             status: "pending",
             appliedAt: new Date(),
         });
+
+        const candidate = await User.findByPk(userId, {
+            attributes: ["id", "email", "firstName", "lastName", "username", "phone", "location", "about"],
+        });
+
+        const siteUrl = getSiteUrl();
+        const jobUrl = job.slug ? `${siteUrl}/jobs/${job.slug}` : `${siteUrl}/jobs`;
+        const companyUrl = job.company?.slug
+            ? `${siteUrl}/companies/${job.company.slug}`
+            : `${siteUrl}/companies`;
+        const applicationUrl = `${siteUrl}/dashboard/applications`;
+        const employerApplicationUrl = `${siteUrl}/dashboard/employer/applications`;
+
+        if (candidate?.email) {
+            sendTemplateMail({
+                template: "candidateApplicationSubmitted",
+                to: candidate.email,
+                data: {
+                    candidateName:
+                        `${candidate.firstName || ""} ${candidate.lastName || ""}`.trim() ||
+                        candidate.username ||
+                        "there",
+                    jobTitle: job.title,
+                    companyName: job.company?.name || "",
+                    location: job.location || "",
+                    jobType: job.type || "",
+                    salaryText: formatSalaryText(job),
+                    applicationStatus: "Submitted",
+                    applicationUrl,
+                    jobUrl,
+                    companyUrl,
+                    submittedAt: application.appliedAt,
+                },
+            }).catch((mailErr) =>
+                console.warn("⚠️ [MAILER] Candidate application email failed:", mailErr.message)
+            );
+        }
+
+        const employerRecipient = job.poster?.email || job.company?.email;
+        if (employerRecipient) {
+            sendTemplateMail({
+                template: "employerNewApplication",
+                to: employerRecipient,
+                data: {
+                    employerName:
+                        `${job.poster?.firstName || ""} ${job.poster?.lastName || ""}`.trim() ||
+                        job.poster?.username ||
+                        job.company?.name ||
+                        "there",
+                    companyName: job.company?.name || "",
+                    candidateName:
+                        `${candidate?.firstName || ""} ${candidate?.lastName || ""}`.trim() ||
+                        candidate?.username ||
+                        "Candidate",
+                    candidateEmail: candidate?.email || "",
+                    candidatePhone: candidate?.phone || "",
+                    jobTitle: job.title,
+                    location: job.location || "",
+                    applicationStatus: "New",
+                    appliedAt: application.appliedAt,
+                    candidateSummary: candidate?.about || "",
+                    currentLocation: candidate?.location || "",
+                    applicationUrl: employerApplicationUrl,
+                    jobUrl,
+                },
+            }).catch((mailErr) =>
+                console.warn("⚠️ [MAILER] Employer application email failed:", mailErr.message)
+            );
+        }
 
         res.status(201).json(application);
     } catch (err) {

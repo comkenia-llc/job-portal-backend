@@ -1,21 +1,46 @@
 const { Plan, Feature } = require("../models");
 const { Op } = require("sequelize");
+const { assignMarketToPayload, applyMarketScope, resolveRequestMarket } = require("../utils/market");
+const { getCurrencyForMarket } = require("../utils/marketCatalog");
 
-const resolveStripeEnvKeys = (slug, cycle = "monthly") => {
-    if (!slug) return [];
-    const normalized = slug.toUpperCase().replace(/-/g, "_");
+const normalizeStripeKeyPart = (value = "") =>
+    String(value || "")
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+
+const buildStripeKeyCandidates = (plan) => {
+    if (!plan) return [];
+
+    const slug = normalizeStripeKeyPart(plan.slug);
+    const name = normalizeStripeKeyPart(plan.name);
+    const audience = normalizeStripeKeyPart(plan.audience);
+    const rawCandidates = [
+        slug,
+        name,
+        slug && audience ? `${audience}_${slug}` : "",
+        name && audience ? `${audience}_${name}` : "",
+    ].filter(Boolean);
+
+    return [...new Set(rawCandidates)];
+};
+
+const resolveStripeEnvKeys = (plan, cycle = "monthly") => {
+    const candidates = buildStripeKeyCandidates(plan);
+    if (!candidates.length) return [];
     const suffix = cycle === "yearly" ? "_YEARLY" : "_MONTHLY";
-    const keys = [`STRIPE_PRICE_${normalized}${suffix}`];
+    const keys = candidates.map((candidate) => `STRIPE_PRICE_${candidate}${suffix}`);
     // Legacy fallback: no suffix for monthly
     if (cycle === "monthly") {
-        keys.push(`STRIPE_PRICE_${normalized}`);
+        candidates.forEach((candidate) => keys.push(`STRIPE_PRICE_${candidate}`));
     }
     return keys;
 };
 
-const stripeAvailability = (slug) => {
-    const monthlyKeys = resolveStripeEnvKeys(slug, "monthly");
-    const yearlyKeys = resolveStripeEnvKeys(slug, "yearly");
+const stripeAvailability = (plan) => {
+    const monthlyKeys = resolveStripeEnvKeys(plan, "monthly");
+    const yearlyKeys = resolveStripeEnvKeys(plan, "yearly");
     return {
         stripe_monthly_ready: monthlyKeys.some((k) => process.env[k]),
         stripe_yearly_ready: yearlyKeys.some((k) => process.env[k]),
@@ -23,6 +48,201 @@ const stripeAvailability = (slug) => {
 };
 
 const hasAudienceColumn = () => Boolean(Plan.rawAttributes && Plan.rawAttributes.audience);
+const buildMarketWhere = (req, options = {}) => {
+    const resolved = resolveRequestMarket(req, {
+        allowAdminOverride: true,
+        allowExplicitOverride: true,
+        allowAllForAdmin: true,
+        ...options,
+    });
+    if (!resolved.market || resolved.market === "global") {
+        return { market: "global" };
+    }
+    return {
+        market: {
+            [Op.in]: [resolved.market, "global"],
+        },
+    };
+};
+
+const dedupeByMarketPreference = (items = [], keyField = "slug", activeMarket = "global") => {
+    const map = new Map();
+
+    items.forEach((item) => {
+        const key = item[keyField];
+        const existing = map.get(key);
+        if (!existing) {
+            map.set(key, item);
+            return;
+        }
+        if (item.market === activeMarket && existing.market !== activeMarket) {
+            map.set(key, item);
+        }
+    });
+
+    return [...map.values()];
+};
+
+const dedupeFeatureDefinitions = (items = [], activeMarket = "global") => {
+    const map = new Map();
+
+    items.forEach((item) => {
+        const key = `${item.audience}:${item.key}`;
+        const existing = map.get(key);
+        if (!existing) {
+            map.set(key, item);
+            return;
+        }
+        if (item.market === activeMarket && existing.market !== activeMarket) {
+            map.set(key, item);
+        }
+    });
+
+    return [...map.values()];
+};
+
+const buildFeatureDisplayValue = (definition, value) => {
+    if (value === null || value === undefined || value === false || value === "") return null;
+    if (definition.type === "number") return String(value);
+    if (definition.type === "string") return String(value);
+    return null;
+};
+
+const buildFeatureDetailsForPlan = (plan, definitionsByKey = new Map()) => {
+    const rawFeatures = normalizeFeatures(plan?.features) || {};
+
+    return Object.entries(rawFeatures)
+        .filter(([, value]) => value !== null && value !== undefined && value !== false && value !== "")
+        .map(([key, value]) => {
+            const definition = definitionsByKey.get(`${plan.audience || "employer"}:${key}`);
+            if (!definition) return null;
+
+            return {
+                key,
+                label: definition.label,
+                description: definition.description || null,
+                type: definition.type,
+                value,
+                display_value: buildFeatureDisplayValue(definition, value),
+            };
+        })
+        .filter(Boolean);
+};
+
+const normalizeBooleanValue = (value) => {
+    if (value === true || value === false) return value;
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === "true") return true;
+        if (normalized === "false") return false;
+    }
+    return null;
+};
+
+const normalizeNumberValue = (value) => {
+    if (value === "" || value === null || value === undefined) return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const buildPlanPayload = async (body, existingPlan = null, market = "global") => {
+    const normalizedMarket = market || existingPlan?.market || "global";
+    const audience = body.audience || existingPlan?.audience || "employer";
+    const featureDefinitions = await Feature.findAll({
+        where: {
+            is_active: true,
+            audience,
+            market: {
+                [Op.in]: [normalizedMarket, "global"],
+            },
+        },
+        order: [["id", "ASC"]],
+    });
+
+    const featureMap = new Map(featureDefinitions.map((item) => [item.key, item]));
+    const incomingFeatures = normalizeFeatures(body.features) || {};
+    const existingFeatures = normalizeFeatures(existingPlan?.features) || {};
+    const nextFeatures = {};
+
+    for (const definition of featureDefinitions) {
+        const hasIncomingValue = Object.prototype.hasOwnProperty.call(incomingFeatures, definition.key);
+        const rawValue = hasIncomingValue
+            ? incomingFeatures[definition.key]
+            : Object.prototype.hasOwnProperty.call(existingFeatures, definition.key)
+              ? existingFeatures[definition.key]
+              : definition.default_value;
+
+        if (definition.type === "boolean") {
+            const normalized = normalizeBooleanValue(rawValue);
+            if (normalized === null) {
+                return {
+                    error: `${definition.label} must be true or false`,
+                };
+            }
+            nextFeatures[definition.key] = normalized;
+            continue;
+        }
+
+        if (definition.type === "number") {
+            const normalized = normalizeNumberValue(rawValue);
+            if (normalized === null) {
+                return {
+                    error: `${definition.label} must be a valid number`,
+                };
+            }
+            nextFeatures[definition.key] = normalized;
+            continue;
+        }
+
+        if (definition.type === "string") {
+            const nextValue =
+                rawValue === null || rawValue === undefined ? "" : String(rawValue).trim();
+
+            if (definition.input_type === "select" && Array.isArray(definition.options) && definition.options.length > 0) {
+                if (nextValue && !definition.options.includes(nextValue)) {
+                    return {
+                        error: `${definition.label} must match one of the allowed options`,
+                    };
+                }
+            }
+
+            nextFeatures[definition.key] = nextValue;
+        }
+    }
+
+    for (const key of Object.keys(incomingFeatures)) {
+        if (!featureMap.has(key)) {
+            return {
+                error: `Unknown feature key: ${key}`,
+            };
+        }
+    }
+
+    return {
+        payload: {
+            name: body.name?.trim(),
+            slug: body.slug?.trim(),
+            market: normalizedMarket,
+            audience,
+            price_monthly: normalizeNumberValue(body.price_monthly) ?? 0,
+            price_yearly:
+                body.price_yearly === "" || body.price_yearly === null || body.price_yearly === undefined
+                    ? null
+                    : normalizeNumberValue(body.price_yearly),
+            currency: getCurrencyForMarket(normalizedMarket),
+            duration_type: body.duration_type || "monthly",
+            features: nextFeatures,
+            description: body.description?.trim() || null,
+            ribbon_text: body.ribbon_text?.trim() || null,
+            ribbon_color: body.ribbon_color?.trim() || null,
+            ribbon_text_color: body.ribbon_text_color?.trim() || null,
+            is_active:
+                body.is_active === undefined
+                    ? existingPlan?.is_active ?? true
+                    : normalizeBooleanValue(body.is_active),
+        },
+    };
+};
 
 // Normalize features that may have been double-encoded (e.g., stored as { "0": "{", "1": "\"", ... })
 const normalizeFeatures = (raw) => {
@@ -83,39 +303,23 @@ const normalizeFeatures = (raw) => {
 // =======================
 exports.createPlan = async (req, res) => {
     try {
-        const {
-            name,
-            slug,
-            audience = "employer",
-            price_monthly,
-            price_yearly,
-            currency,
-            duration_type,
-            features,
-            description,
-            ribbon_text,
-            ribbon_color,
-            ribbon_text_color,
-        } = req.body;
+        const marketSeed = {
+            market: req.body.market || req.query?.market || req.headers["x-market"],
+        };
+        assignMarketToPayload(marketSeed, req, { allowAdminOverride: true });
+        const built = await buildPlanPayload(req.body, null, marketSeed.market);
+        if (built.error) {
+            return res.status(400).json({ message: built.error });
+        }
+        if (!built.payload.name || !built.payload.slug) {
+            return res.status(400).json({ message: "Name and slug are required" });
+        }
 
-        const plan = await Plan.create({
-            name,
-            slug,
-            audience,
-            price_monthly,
-            price_yearly,
-            currency,
-            duration_type,
-            features,
-            description,
-            ribbon_text,
-            ribbon_color,
-            ribbon_text_color,
-        });
+        const plan = await Plan.create(built.payload);
 
         return res.status(201).json({
             ...plan.toJSON(),
-            ...stripeAvailability(slug),
+            ...stripeAvailability(plan),
         });
     } catch (error) {
         console.error(error);
@@ -129,9 +333,9 @@ exports.createPlan = async (req, res) => {
 exports.getAllPlans = async (_req, res) => {
     try {
         const audienceSupported = hasAudienceColumn();
-        const where = {};
+        const where = buildMarketWhere(_req);
         if (audienceSupported && _req.query?.audience) {
-            where[Op.or] = [{ audience: _req.query.audience }, { audience: null }];
+            where.audience = _req.query.audience;
         }
 
         const plansRaw = await Plan.findAll({
@@ -139,6 +343,7 @@ exports.getAllPlans = async (_req, res) => {
                 "id",
                 "name",
                 "slug",
+                "market",
                 ...(audienceSupported ? ["audience"] : []),
                 "price_monthly",
                 "price_yearly",
@@ -156,14 +361,37 @@ exports.getAllPlans = async (_req, res) => {
             where,
             order: [["price_monthly", "ASC"]],
         });
-        const plans = plansRaw.map((p) => {
-            const plain = p.toJSON();
-            return {
-                ...plain,
-                features: normalizeFeatures(plain.features),
-                ...stripeAvailability(p.slug),
-            };
+        const resolvedMarket = resolveRequestMarket(_req, {
+            allowAdminOverride: true,
+            allowExplicitOverride: true,
+            allowAllForAdmin: true,
+        }).market;
+        const definitionRows = await Feature.findAll({
+            where: {
+                is_active: true,
+                market: resolvedMarket && resolvedMarket !== "global" ? { [Op.in]: [resolvedMarket, "global"] } : "global",
+            },
+            order: [["id", "ASC"]],
         });
+        const definitionsByKey = new Map(
+            dedupeFeatureDefinitions(definitionRows.map((item) => item.toJSON()), resolvedMarket).map((item) => [
+                `${item.audience}:${item.key}`,
+                item,
+            ])
+        );
+        const plans = dedupeByMarketPreference(
+            plansRaw.map((p) => {
+                const plain = p.toJSON();
+                return {
+                    ...plain,
+                    features: normalizeFeatures(plain.features),
+                    feature_details: buildFeatureDetailsForPlan(plain, definitionsByKey),
+                    ...stripeAvailability(plain),
+                };
+            }),
+            "slug",
+            resolvedMarket
+        );
         res.json(plans);
     } catch (error) {
         res.status(500).json({ message: "Failed to fetch plans", error: error.message });
@@ -176,9 +404,9 @@ exports.getAllPlans = async (_req, res) => {
 exports.listPublicPlans = async (_req, res) => {
     try {
         const audienceSupported = hasAudienceColumn();
-        const where = {};
+        const where = buildMarketWhere(_req);
         if (audienceSupported && _req.query?.audience) {
-            where[Op.or] = [{ audience: _req.query.audience }, { audience: null }];
+            where.audience = _req.query.audience;
         }
 
         const plansRaw = await Plan.findAll({
@@ -186,6 +414,7 @@ exports.listPublicPlans = async (_req, res) => {
                 "id",
                 "name",
                 "slug",
+                "market",
                 ...(audienceSupported ? ["audience"] : []),
                 "price_monthly",
                 "price_yearly",
@@ -200,14 +429,35 @@ exports.listPublicPlans = async (_req, res) => {
             where,
             order: [["price_monthly", "ASC"]],
         });
-        const plans = plansRaw.map((p) => {
-            const plain = p.toJSON();
-            return {
-                ...plain,
-                features: normalizeFeatures(plain.features),
-                ...stripeAvailability(p.slug),
-            };
+        const resolvedMarket = resolveRequestMarket(_req, {
+            allowExplicitOverride: true,
+        }).market;
+        const definitionRows = await Feature.findAll({
+            where: {
+                is_active: true,
+                market: resolvedMarket && resolvedMarket !== "global" ? { [Op.in]: [resolvedMarket, "global"] } : "global",
+            },
+            order: [["id", "ASC"]],
         });
+        const definitionsByKey = new Map(
+            dedupeFeatureDefinitions(definitionRows.map((item) => item.toJSON()), resolvedMarket).map((item) => [
+                `${item.audience}:${item.key}`,
+                item,
+            ])
+        );
+        const plans = dedupeByMarketPreference(
+            plansRaw.map((p) => {
+                const plain = p.toJSON();
+                return {
+                    ...plain,
+                    features: normalizeFeatures(plain.features),
+                    feature_details: buildFeatureDetailsForPlan(plain, definitionsByKey),
+                    ...stripeAvailability(plain),
+                };
+            }),
+            "slug",
+            resolvedMarket
+        );
         res.json(plans);
     } catch (error) {
         console.error("❌ Failed to fetch public plans:", error);
@@ -223,7 +473,13 @@ exports.getPlanById = async (req, res) => {
         const { id } = req.params;
         const plan = await Plan.findByPk(id);
         if (!plan) return res.status(404).json({ message: "Plan not found" });
-        res.json(plan);
+        const plain = plan.toJSON();
+        res.json({
+            ...plain,
+            features: normalizeFeatures(plain.features),
+            feature_details: buildFeatureDetailsForPlan(plain, new Map()),
+            ...stripeAvailability(plain),
+        });
     } catch (error) {
         res.status(500).json({ message: "Failed to fetch plan", error: error.message });
     }
@@ -238,8 +494,23 @@ exports.updatePlan = async (req, res) => {
         const plan = await Plan.findByPk(id);
         if (!plan) return res.status(404).json({ message: "Plan not found" });
 
-        await plan.update(req.body);
-        res.json(plan);
+        const marketSeed = {
+            market: req.body.market || plan.market,
+        };
+        assignMarketToPayload(marketSeed, req, { allowAdminOverride: true });
+        const built = await buildPlanPayload(req.body, plan, marketSeed.market);
+        if (built.error) {
+            return res.status(400).json({ message: built.error });
+        }
+        if (!built.payload.name || !built.payload.slug) {
+            return res.status(400).json({ message: "Name and slug are required" });
+        }
+
+        await plan.update(built.payload);
+        res.json({
+            ...plan.toJSON(),
+            ...stripeAvailability(plan),
+        });
     } catch (error) {
         res.status(400).json({ message: "Failed to update plan", error: error.message });
     }
@@ -266,15 +537,23 @@ exports.deletePlan = async (req, res) => {
 // =======================
 exports.getFeatureDefinitions = async (req, res) => {
     try {
-        const where = { is_active: true };
+        const where = {
+            is_active: true,
+            ...buildMarketWhere(req),
+        };
         if (req.query?.audience) {
             where.audience = req.query.audience;
         }
-        const features = await Feature.findAll({
+        const featuresRaw = await Feature.findAll({
             where,
             order: [["id", "ASC"]],
         });
-        res.json(features);
+        const resolvedMarket = resolveRequestMarket(req, {
+            allowAdminOverride: true,
+            allowExplicitOverride: true,
+            allowAllForAdmin: true,
+        }).market;
+        res.json(dedupeByMarketPreference(featuresRaw.map((item) => item.toJSON()), "key", resolvedMarket));
     } catch (error) {
         res.status(500).json({ message: "Failed to fetch feature definitions", error: error.message });
     }

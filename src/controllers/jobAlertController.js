@@ -1,6 +1,6 @@
-const { JobAlert, Job, User } = require("../models");
+const { JobAlert, Job, User, Company } = require("../models");
 const { Op } = require("sequelize");
-const nodemailer = require("nodemailer");
+const { sendTemplateMail } = require("../services/mailTemplateService");
 
 // ─── CRUD ─────────────────────────────────────────────────────────────────────
 
@@ -62,16 +62,6 @@ exports.deleteAlert = async (req, res) => {
 
 // ─── Email dispatch (called by cron) ─────────────────────────────────────────
 
-const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || "smtp.gmail.com",
-    port: Number(process.env.SMTP_PORT) || 587,
-    secure: false,
-    auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-    },
-});
-
 const buildWhereFromAlert = (alert) => {
     const where = { isActive: true };
     if (alert.keywords) {
@@ -112,44 +102,56 @@ exports.dispatchAlerts = async () => {
                     where: { ...buildWhereFromAlert(alert), createdAt: { [Op.gte]: sinceDate } },
                     limit: 10,
                     order: [["createdAt", "DESC"]],
-                    attributes: ["id", "title", "slug", "location", "type", "salaryMin", "salaryMax"],
+                    attributes: ["id", "title", "slug", "location", "type", "salaryMin", "salaryMax", "currency", "createdAt"],
+                    include: [
+                        {
+                            model: Company,
+                            as: "company",
+                            attributes: ["name"],
+                            required: false,
+                        },
+                    ],
                 });
 
                 if (jobs.length === 0) continue;
 
-                const frontendUrl = process.env.FRONTEND_URL || "https://jobs.keekan.com";
-                const jobRows = jobs.map((j) =>
-                    `<tr>
-                        <td style="padding:8px 0;border-bottom:1px solid #f0f0f0">
-                            <a href="${frontendUrl}/jobs/${j.slug}" style="color:#2563eb;font-weight:600;text-decoration:none">${j.title}</a>
-                            <br><span style="color:#6b7280;font-size:13px">${j.location || "Dubai, UAE"} · ${j.type || ""}</span>
-                        </td>
-                    </tr>`
-                ).join("");
+                const siteUrl = process.env.SITE_URL || process.env.FRONTEND_URL || "https://dubaijobzone.com";
+                const mappedJobs = jobs.map((job) => ({
+                    title: job.title,
+                    companyName: job.company?.name || "Company not provided",
+                    location: job.location || "Dubai, UAE",
+                    type: job.type || "",
+                    salaryMin: job.salaryMin,
+                    salaryMax: job.salaryMax,
+                    currency: job.currency || "AED",
+                    postedAt: job.createdAt,
+                    url: job.slug ? `${siteUrl}/jobs/${job.slug}` : `${siteUrl}/jobs`,
+                }));
 
-                await transporter.sendMail({
-                    from: `"Keekan Jobs" <${process.env.SMTP_USER}>`,
+                await sendTemplateMail({
+                    template: alert.frequency === "weekly" ? "weeklyJobDigest" : "dailyJobAlert",
                     to: alert.User.email,
-                    subject: `${jobs.length} new job${jobs.length > 1 ? "s" : ""} matching "${alert.keywords || "your alert"}"`,
-                    html: `
-                        <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-                            <div style="background:#2563eb;padding:20px 24px;border-radius:8px 8px 0 0">
-                                <h1 style="color:#fff;margin:0;font-size:20px">New Jobs For You</h1>
-                            </div>
-                            <div style="padding:20px 24px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px">
-                                <p style="color:#374151">Hi ${alert.User.firstName || "there"},</p>
-                                <p style="color:#374151">Here are the latest jobs matching <strong>${alert.keywords || "your search"}</strong>:</p>
-                                <table style="width:100%;border-collapse:collapse">${jobRows}</table>
-                                <div style="margin-top:20px">
-                                    <a href="${frontendUrl}/jobs" style="background:#2563eb;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600">Browse All Jobs</a>
-                                </div>
-                                <hr style="margin:24px 0;border:none;border-top:1px solid #e5e7eb">
-                                <p style="color:#9ca3af;font-size:12px">
-                                    You're receiving this because you set up a job alert on Keekan Jobs.<br>
-                                    <a href="${frontendUrl}/dashboard/alerts" style="color:#6b7280">Manage alerts</a>
-                                </p>
-                            </div>
-                        </div>`,
+                    data: {
+                        name: alert.User.firstName || "there",
+                        alertTitle: alert.keywords
+                            ? `Jobs matching "${alert.keywords}"`
+                            : "Dubai jobs matching your profile",
+                        alertKeyword: alert.keywords || "",
+                        alertLocation: alert.location || "Dubai",
+                        jobs: mappedJobs,
+                        totalMatches: mappedJobs.length,
+                        jobsUrl: `${siteUrl}/jobs`,
+                        alertSettingsUrl: `${siteUrl}/dashboard/alerts`,
+                        weekLabel: "This week",
+                        totalNewJobs: mappedJobs.length,
+                        recommendedLocation: alert.location || "Dubai",
+                        recommendedRole: alert.keywords || "",
+                        jobAlertsUrl: `${siteUrl}/dashboard/alerts`,
+                        digestSettingsUrl: `${siteUrl}/dashboard/alerts`,
+                        companiesUrl: `${siteUrl}/companies`,
+                        walkInUrl: `${siteUrl}/walk-in-interviews`,
+                        sentAt: now,
+                    },
                 });
 
                 await alert.update({ lastSentAt: now });

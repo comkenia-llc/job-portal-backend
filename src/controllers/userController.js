@@ -1,9 +1,15 @@
 const { User, Company } = require("../models");
 const bcrypt = require("bcrypt");
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const { Op } = require("sequelize");
 const path = require("path");
 const { resolveRequestMarket } = require("../utils/market");
+const { sendTemplateMail, getSiteUrl } = require("../services/mailTemplateService");
+const {
+    ensureDefaultEmployerPlan,
+    assignDefaultEmployerPlan,
+} = require("../services/employerPlanService");
 
 const resolveUserId = (rawId) =>
     typeof rawId === "object" && rawId?.id ? rawId.id : rawId;
@@ -14,6 +20,102 @@ const shouldPersistMarketPreference = (resolvedMarket) =>
         resolvedMarket.source === "request-host" &&
         resolvedMarket.market !== "global"
     );
+
+const EMAIL_VERIFICATION_CODE_LENGTH = 5;
+const EMAIL_VERIFICATION_EXPIRY_MINUTES = 10;
+const EMPLOYER_ONBOARDING_JOB_PATH = "/employer/post-job?onboarding=1";
+const EMPLOYER_ONBOARDING_CREATE_COMPANY_PATH = `/companies/create?onboarding=1&redirect=${encodeURIComponent(
+    EMPLOYER_ONBOARDING_JOB_PATH
+)}`;
+
+const generateVerificationCode = () =>
+    String(Math.floor(Math.random() * 10 ** EMAIL_VERIFICATION_CODE_LENGTH)).padStart(
+        EMAIL_VERIFICATION_CODE_LENGTH,
+        "0"
+    );
+
+const hashVerificationCode = (code) =>
+    crypto.createHash("sha256").update(String(code)).digest("hex");
+
+const getUserDisplayName = (user) =>
+    user?.firstName ||
+    user?.username ||
+    user?.email?.split("@")[0] ||
+    "there";
+
+const setEmailVerificationCode = async (user) => {
+    const code = generateVerificationCode();
+    const expiresAt = new Date(
+        Date.now() + EMAIL_VERIFICATION_EXPIRY_MINUTES * 60 * 1000
+    );
+
+    user.emailVerificationCodeHash = hashVerificationCode(code);
+    user.emailVerificationCodeExpiresAt = expiresAt;
+    await user.save();
+
+    return {
+        code,
+        expiresAt,
+    };
+};
+
+const buildTokenPayload = (user) => {
+    const payload = {
+        id: user.id,
+        role: user.role,
+    };
+
+    if (user.company_id) {
+        payload.companyId = user.company_id;
+    }
+
+    return payload;
+};
+
+const issueAuthSession = (res, user) => {
+    const token = jwt.sign(buildTokenPayload(user), process.env.JWT_SECRET, {
+        expiresIn: "7d",
+    });
+
+    res.cookie("token", token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    return token;
+};
+
+const buildAuthUserResponse = (plainUser, linkedCompany = null, requestMarket = null) => ({
+    id: plainUser.id,
+    username: plainUser.username,
+    email: plainUser.email,
+    role: plainUser.role,
+    status: plainUser.status,
+    companyId: plainUser.company_id || null,
+    companyMarket: linkedCompany?.market || null,
+    preferredMarket: plainUser.preferredMarket || null,
+    firstName: plainUser.firstName || null,
+    lastName: plainUser.lastName || null,
+    avatarUrl: plainUser.avatarUrl || null,
+    emailVerified: plainUser.emailVerified,
+    currentMarket: requestMarket || null,
+});
+
+const resolvePostAuthRedirect = (plainUser) => {
+    if (plainUser.role === "admin") {
+        return "/admin";
+    }
+
+    if (plainUser.role === "employer") {
+        return plainUser.company_id
+            ? EMPLOYER_ONBOARDING_JOB_PATH
+            : EMPLOYER_ONBOARDING_CREATE_COMPANY_PATH;
+    }
+
+    return "/dashboard";
+};
 
 // ============================================
 // 🔹 Register User
@@ -59,6 +161,20 @@ exports.register = async (req, res) => {
                 : null,
         });
 
+        const { code } = await setEmailVerificationCode(user);
+
+        sendTemplateMail({
+            template: "emailVerificationCode",
+            to: user.email,
+            data: {
+                name: getUserDisplayName(user),
+                code,
+                expiresInMinutes: EMAIL_VERIFICATION_EXPIRY_MINUTES,
+            },
+        }).catch((mailErr) =>
+            console.warn("⚠️ [MAILER] Verification email failed:", mailErr.message)
+        );
+
         console.log("✅ [REGISTER] User created:", {
             id: user.id,
             email: user.email,
@@ -73,7 +189,9 @@ exports.register = async (req, res) => {
                 email: user.email,
                 role: user.role,
                 preferredMarket: user.preferredMarket || null,
+                emailVerified: user.emailVerified,
             },
+            verificationRequired: true,
         });
     } catch (err) {
         console.error("❌ [REGISTER] Error:", err);
@@ -108,6 +226,15 @@ exports.login = async (req, res) => {
         if (!isPasswordValid) {
             console.warn("⚠️ [LOGIN] Invalid password for:", emailOrUsername);
             return res.status(400).json({ error: "Invalid credentials" });
+        }
+
+        if (!user.emailVerified && user.emailVerificationCodeHash) {
+            return res.status(403).json({
+                error: "Email verification required",
+                verificationRequired: true,
+                email: user.email,
+                role: user.role,
+            });
         }
 
         const resolvedMarket = resolveRequestMarket(req, {
@@ -166,58 +293,161 @@ exports.login = async (req, res) => {
         });
 
         // 4️⃣ Prepare token payload
-        const tokenPayload = {
-            id: plainUser.id,
-            role: plainUser.role,
-        };
-
-        // ✅ Include companyId for any role when present (employer/admin)
         if (plainUser.company_id) {
-            tokenPayload.companyId = plainUser.company_id;
             console.log("✅ [LOGIN] User linked to company:", plainUser.company_id);
         } else if (plainUser.role === "employer") {
             console.warn("⚠️ [LOGIN] Employer has no company linked!");
         }
 
-        // 5️⃣ Sign JWT (only one payload object)
-        const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
-            expiresIn: "7d",
-        });
+        // 5️⃣ Sign JWT + set cookie
+        const token = issueAuthSession(res, plainUser);
 
-        console.log("🪪 [LOGIN] JWT payload used:", tokenPayload);
-
-        // 6️⃣ Set cookie
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: "lax",
-            maxAge: 7 * 24 * 60 * 60 * 1000,
-        });
+        console.log("🪪 [LOGIN] JWT payload used:", buildTokenPayload(plainUser));
 
         // 7️⃣ Respond
         res.json({
             message: "Login successful",
             token,
-            user: {
-                id: plainUser.id,
-                username: plainUser.username,
-                email: plainUser.email,
-                role: plainUser.role,
-                status: plainUser.status,
-                companyId: plainUser.company_id || null,
-                companyMarket: linkedCompany?.market || null,
-                preferredMarket: plainUser.preferredMarket || null,
-                firstName: plainUser.firstName || null,
-                lastName: plainUser.lastName || null,
-                avatarUrl: plainUser.avatarUrl || null,
-                currentMarket: requestMarket || null,
-            },
+            user: buildAuthUserResponse(plainUser, linkedCompany, requestMarket),
         });
 
         console.log("✅ [LOGIN] Login success for user ID:", plainUser.id);
     } catch (err) {
         console.error("❌ [LOGIN] Unexpected error:", err);
         res.status(500).json({ error: "Server error during login" });
+    }
+};
+
+// ============================================
+// 🔹 Verify Email
+// ============================================
+exports.verifyEmail = async (req, res) => {
+    try {
+        const { email, code } = req.body;
+
+        if (!email || !code) {
+            return res.status(400).json({ error: "Email and code are required" });
+        }
+
+        const user = await User.findOne({ where: { email: email.trim() } });
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        if (user.emailVerified) {
+            return res.json({ message: "Email already verified" });
+        }
+
+        if (
+            !user.emailVerificationCodeHash ||
+            !user.emailVerificationCodeExpiresAt
+        ) {
+            return res.status(400).json({ error: "Verification code not found" });
+        }
+
+        if (new Date(user.emailVerificationCodeExpiresAt) < new Date()) {
+            return res.status(400).json({ error: "Verification code has expired" });
+        }
+
+        if (hashVerificationCode(code.trim()) !== user.emailVerificationCodeHash) {
+            return res.status(400).json({ error: "Invalid verification code" });
+        }
+
+        user.emailVerified = true;
+        user.emailVerificationCodeHash = null;
+        user.emailVerificationCodeExpiresAt = null;
+        await user.save();
+
+        if (user.role === "employer") {
+            await ensureDefaultEmployerPlan();
+            if (user.company_id) {
+                await assignDefaultEmployerPlan(user.company_id);
+            }
+        }
+
+        sendTemplateMail({
+            template: "welcomeEmail",
+            to: user.email,
+            data: {
+                name: getUserDisplayName(user),
+                accountType: user.role || "candidate",
+                dashboardUrl: `${getSiteUrl()}/dashboard`,
+                employerDashboardUrl: `${getSiteUrl()}/dashboard/employer`,
+                jobsUrl: `${getSiteUrl()}/jobs`,
+                walkInUrl: `${getSiteUrl()}/walk-in-interviews`,
+                companiesUrl: `${getSiteUrl()}/companies`,
+                jobAlertsUrl: `${getSiteUrl()}/dashboard/alerts`,
+                profileUrl: `${getSiteUrl()}/dashboard/profile`,
+                resumeBuilderUrl: `${getSiteUrl()}/dashboard/resumes/builder`,
+                postJobUrl: `${getSiteUrl()}/dashboard/employer/jobs/new`,
+                companyProfileUrl: `${getSiteUrl()}/dashboard/employer/company`,
+            },
+        }).catch((mailErr) =>
+            console.warn("⚠️ [MAILER] Welcome email failed:", mailErr.message)
+        );
+
+        const plainUser = user.get({ plain: true });
+        const requestMarket = resolveRequestMarket(req, {
+            allowAdminOverride: plainUser.role === "admin",
+        }).market;
+        let linkedCompany = null;
+        if (plainUser.company_id) {
+            linkedCompany = await Company.findByPk(plainUser.company_id, {
+                attributes: ["id", "name", "market", "slug"],
+            });
+        }
+
+        const token = issueAuthSession(res, plainUser);
+
+        res.json({
+            message: "Email verified successfully",
+            token,
+            user: buildAuthUserResponse(plainUser, linkedCompany, requestMarket),
+            redirectTo: resolvePostAuthRedirect(plainUser),
+        });
+    } catch (err) {
+        console.error("❌ [VERIFY EMAIL] Error:", err);
+        res.status(500).json({ error: "Failed to verify email" });
+    }
+};
+
+// ============================================
+// 🔹 Resend Verification Code
+// ============================================
+exports.resendVerificationCode = async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({ error: "Email is required" });
+        }
+
+        const user = await User.findOne({ where: { email: email.trim() } });
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        if (user.emailVerified) {
+            return res.status(400).json({ error: "Email already verified" });
+        }
+
+        const { code } = await setEmailVerificationCode(user);
+
+        await sendTemplateMail({
+            template: "resendVerification",
+            to: user.email,
+            data: {
+                name: getUserDisplayName(user),
+                code,
+                expiresInMinutes: EMAIL_VERIFICATION_EXPIRY_MINUTES,
+                requestedAt: new Date(),
+            },
+        });
+
+        res.json({ message: "Verification code sent" });
+    } catch (err) {
+        console.error("❌ [RESEND VERIFY] Error:", err);
+        res.status(500).json({ error: "Failed to resend verification code" });
     }
 };
 

@@ -6,6 +6,7 @@ module.exports = {
         const features = [
             {
                 key: "can_apply_jobs",
+                market: "global",
                 label: "Can apply to jobs",
                 audience: "candidate",
                 type: "boolean",
@@ -18,6 +19,7 @@ module.exports = {
             },
             {
                 key: "max_applications_per_day",
+                market: "global",
                 label: "Max applications per day",
                 audience: "candidate",
                 type: "number",
@@ -30,6 +32,7 @@ module.exports = {
             },
             {
                 key: "can_message_employers",
+                market: "global",
                 label: "Can message employers",
                 audience: "candidate",
                 type: "boolean",
@@ -42,6 +45,7 @@ module.exports = {
             },
             {
                 key: "max_messages_day_candidate",
+                market: "global",
                 label: "Max messages per day (candidate)",
                 audience: "candidate",
                 type: "number",
@@ -54,6 +58,7 @@ module.exports = {
             },
             {
                 key: "can_generate_resume",
+                market: "global",
                 label: "Can generate resume",
                 audience: "candidate",
                 type: "boolean",
@@ -66,6 +71,7 @@ module.exports = {
             },
             {
                 key: "can_download_resume",
+                market: "global",
                 label: "Can download resume",
                 audience: "candidate",
                 type: "boolean",
@@ -78,6 +84,7 @@ module.exports = {
             },
             {
                 key: "resume_templates_limit",
+                market: "global",
                 label: "Resume templates limit",
                 audience: "candidate",
                 type: "number",
@@ -90,6 +97,7 @@ module.exports = {
             },
             {
                 key: "can_boost_profile",
+                market: "global",
                 label: "Can boost profile",
                 audience: "candidate",
                 type: "boolean",
@@ -102,6 +110,7 @@ module.exports = {
             },
             {
                 key: "profile_boosts_per_month",
+                market: "global",
                 label: "Profile boosts per month",
                 audience: "candidate",
                 type: "number",
@@ -117,6 +126,7 @@ module.exports = {
         await queryInterface.bulkInsert("features", features, {
             updateOnDuplicate: [
                 "audience",
+                "market",
                 "label",
                 "type",
                 "input_type",

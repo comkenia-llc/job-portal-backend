@@ -6,9 +6,11 @@ const {
     Job,
     Application,
     Location,
+    User,
 } = require("../models");
 const { Op, Sequelize } = require("sequelize");
 const { getEmployerPlanFeatures, isFeatureEnabled } = require("../utils/planFeatures");
+const { assignDefaultEmployerPlan } = require("../services/employerPlanService");
 const { applyMarketScope, assignMarketToPayload } = require("../utils/market");
 const { assertEmployerMarketAccess } = require("../utils/marketAccess");
 
@@ -34,6 +36,51 @@ function normalizeTags(tags) {
             .map((t) => t.trim())
             .filter(Boolean);
     return null;
+}
+
+async function buildFullLocation(location) {
+    if (!location) return null;
+
+    const chain = [];
+    let current = location;
+
+    while (current) {
+        chain.unshift(current);
+        if (!current.parentId) break;
+        current = await Location.findByPk(current.parentId);
+    }
+
+    const country = chain.find((item) => item.type === "country");
+    const state = chain.find((item) => item.type === "state");
+    const city = chain.find((item) => item.type === "city");
+    const neighborhood = chain.find((item) => item.type === "neighborhood");
+
+    const areaName = neighborhood?.name || null;
+    const cityName = city?.name || location.city || null;
+    const stateName = state?.name || location.state || null;
+    const countryName = country?.name || location.country || null;
+    const countryCode = country?.countryCode || location.countryCode || null;
+
+    const labelParts = [
+        areaName,
+        cityName,
+        countryCode === "AE" ? "UAE" : countryName,
+    ].filter(Boolean);
+
+    return {
+        id: location.id,
+        name: location.name,
+        type: location.type,
+        slug: location.slug,
+
+        area: areaName,
+        city: cityName,
+        state: stateName,
+        country: countryName,
+        countryCode,
+
+        label: [...new Set(labelParts)].join(", "),
+    };
 }
 
 const slugifyValue = (value = "") =>
@@ -97,7 +144,17 @@ function buildLocationLabel(location) {
 
 const locationInclude = {
     model: Location,
-    attributes: ["id", "name", "city", "state", "country", "slug", "countryCode"],
+    attributes: [
+        "id",
+        "name",
+        "city",
+        "state",
+        "country",
+        "slug",
+        "countryCode",
+        "parentId",
+        "type",
+    ],
 };
 const companyCategoryInclude = {
     model: CompanyCategory,
@@ -179,6 +236,8 @@ exports.createCompany = async (req, res) => {
                 { where: { id: req.user.id } }
             );
             console.log(`🔗 Linked user ${req.user.id} → company ${company.id}`);
+            await assignDefaultEmployerPlan(company.id);
+            console.log(`🧾 Assigned default free employer plan to company ${company.id}`);
         }
 
         res.status(201).json(company);
@@ -265,7 +324,9 @@ exports.getCompanies = async (req, res) => {
     try {
         const sort = req.query.sort;
         const rawLimit = req.query.limit ? parseInt(req.query.limit, 10) : null;
-        const limit = rawLimit ? Math.min(rawLimit, 100) : null;
+        
+        const limit = Math.min(Math.max(rawLimit || 20, 1), 50);
+        
         const page = Math.max(1, parseInt(req.query.page, 10) || 1);
         const paginated = req.query.paginated === "true";
         const search = (req.query.search || "").trim();
@@ -429,10 +490,37 @@ exports.getCompanyBySlug = async (req, res) => {
             }),
             include: [locationInclude, companyCategoryInclude],
         });
+
         if (!company) {
             return res.status(404).json({ error: "Company not found" });
         }
-        res.json(company);
+
+        const jobCount = await Job.count({
+            where: applyMarketScope(
+                {
+                    companyId: company.id,
+                    status: "open",
+                },
+                req,
+                {
+                    allowAdminOverride: true,
+                    allowAllForAdmin: true,
+                }
+            ),
+        });
+
+        const json = company.toJSON();
+        const location = json.Location
+            ? await buildFullLocation(json.Location)
+            : null;
+
+        delete json.Location;
+
+        res.json({
+            ...json,
+            location,
+            jobCount,
+        });
     } catch (err) {
         console.error("❌ Get company by slug error:", err);
         res.status(500).json({ error: "Server error" });
@@ -458,7 +546,9 @@ exports.deleteCompany = async (req, res) => {
 exports.getAllCompaniesAdmin = async (req, res) => {
     try {
         const { page = 1, limit = 12, search = "" } = req.query;
-        const offset = (page - 1) * limit;
+        
+        const limitNum = Math.min(Math.max(parseInt(limit, 10) || 12, 1), 200);
+        const offset = (page - 1) * limitNum;
 
         const where = applyMarketScope({}, req, {
             allowAdminOverride: true,
@@ -477,7 +567,7 @@ exports.getAllCompaniesAdmin = async (req, res) => {
             where,
             order: [["createdAt", "DESC"]],
             offset,
-            limit: parseInt(limit),
+            limit: limitNum,
             include: [locationInclude, companyCategoryInclude],
         });
 
@@ -499,7 +589,7 @@ exports.getAllCompaniesAdmin = async (req, res) => {
         res.json({
             companies: enrichedRows,
             total: count,
-            totalPages: Math.ceil(count / limit),
+            totalPages: Math.ceil(count / limitNum),
             page: parseInt(page),
         });
     } catch (err) {

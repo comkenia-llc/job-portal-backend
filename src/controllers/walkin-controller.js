@@ -308,7 +308,7 @@ exports.createWalkInInterview = async (req, res) => {
 exports.listWalkInInterviews = async (req, res) => {
     try {
         const page = Math.max(parseInt(req.query.page || "1", 10), 1);
-        const limit = Math.min(Math.max(parseInt(req.query.limit || "12", 10), 1), 100);
+        const limit = Math.min(Math.max(parseInt(req.query.limit || "12", 10), 1), 50);
         const offset = (page - 1) * limit;
         const includeJobs = req.query.includeJobs === "true";
 

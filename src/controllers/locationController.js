@@ -52,6 +52,8 @@ const normalizeJSON = (value) => {
     return value;
 };
 
+
+
 const buildDisplayName = (loc) => {
     if (!loc) return "Untitled Location";
     const parts = [];
@@ -79,6 +81,83 @@ const serializeLocation = (loc) => ({
     ...loc.toJSON(),
     displayName: buildDisplayName(loc),
 });
+
+const slugifyValue = (value = "") =>
+    value
+        .toString()
+        .toLowerCase()
+        .trim()
+        .replace(/&/g, "and")
+        .replace(/[^a-z0-9\s-]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+const getLocationPrimaryName = (location) => {
+    if (!location) return "";
+    if (location.type === "country") return location.country || location.name;
+    if (location.type === "state") return location.state || location.name;
+    if (location.type === "city") return location.city || location.name;
+    return location.name || location.city || location.state || location.country;
+};
+
+const buildLocationChain = async (location) => {
+    const chain = [];
+    let current = location;
+
+    while (current) {
+        chain.unshift(current);
+        if (!current.parentId) break;
+        current = await Location.findByPk(current.parentId);
+    }
+
+    return chain;
+};
+
+const buildHierarchySlugFromChain = (chain) => {
+    const parts = chain
+        .map(getLocationPrimaryName)
+        .filter(Boolean);
+
+    return slugifyValue([...parts].reverse().join("-"));
+};
+
+const generateUniqueLocationSlug = async (rawSlug, excludeId = null, market = null) => {
+    const base = slugifyValue(rawSlug) || `location-${Date.now()}`;
+    let slug = base;
+    let counter = 1;
+
+    while (
+        await Location.findOne({
+            where: {
+                slug,
+                ...(excludeId ? { id: { [Op.ne]: excludeId } } : {}),
+                ...(market ? { market } : {}),
+            },
+            attributes: ["id"],
+        })
+    ) {
+        slug = `${base}-${counter++}`;
+    }
+
+    return slug;
+};
+
+const prepareLocationSlug = async (data, existingLocation = null) => {
+    const locationLike = {
+        ...existingLocation?.toJSON?.(),
+        ...data,
+    };
+
+    let rawSlug = data.slug;
+
+    if (!rawSlug) {
+        const chain = await buildLocationChain(locationLike);
+        rawSlug = buildHierarchySlugFromChain(chain);
+    }
+
+    return generateUniqueLocationSlug(rawSlug, existingLocation?.id || null, data.market || existingLocation?.market);
+};
 
 const HUB_LOCATION_ATTRIBUTES = [
     "id",
@@ -245,6 +324,7 @@ exports.createLocation = async (req, res) => {
             data.name = buildDisplayName(data);
         }
 
+        data.slug = await prepareLocationSlug(data);
         const location = await Location.create(data);
 
         console.log("✅ Location created:", location.toJSON());
@@ -270,7 +350,7 @@ exports.createLocation = async (req, res) => {
 exports.getAllLocations = async (req, res) => {
     try {
         const { type, parentId, isFeatured, search, city, limit = 50, page = 1 } = req.query;
-        const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+        const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 50);
         const pageNum = Math.max(parseInt(page, 10) || 1, 1);
         const offset = (pageNum - 1) * limitNum;
         const where = applyMarketScope({}, req, {
@@ -280,7 +360,18 @@ exports.getAllLocations = async (req, res) => {
         });
 
         if (type && type !== "all") where.type = type;
-        if (parentId !== undefined) where.parentId = parentId === "null" ? null : parseInt(parentId, 10);
+        
+        if (parentId !== undefined && parentId !== "") {
+            if (parentId === "null") {
+                where.parentId = null;
+            } else {
+                const parsedParentId = parseInt(parentId, 10);
+                if (!Number.isNaN(parsedParentId)) {
+                    where.parentId = parsedParentId;
+                }
+            }
+        }
+
         if (city) {
             where.city = { [Op.like]: `%${city}%` };
         }
@@ -472,7 +563,7 @@ exports.updateLocation = async (req, res) => {
             continent: req.body.continent?.trim() || null,
             timezone: req.body.timezone?.trim() || null,
             currency: req.body.currency?.trim() || "USD",
-            slug: req.body.slug?.trim() || location.slug,
+            slug: req.body.slug?.trim() || null,
             affordabilityTier: req.body.affordabilityTier?.trim() || null,
         };
         assignMarketToPayload(data, req, { allowAdminOverride: true });
@@ -505,6 +596,8 @@ exports.updateLocation = async (req, res) => {
         if (req.files?.flag?.[0]) data.flag = moveFile(req.files.flag[0], "flags");
         if (req.files?.image?.[0]) data.image = moveFile(req.files.image[0], "locations");
         if (req.files?.metaImage?.[0]) data.metaImage = moveFile(req.files.metaImage[0], "locations");
+
+        data.slug = await prepareLocationSlug(data, location);
 
         await location.update(data);
         res.json({ message: "✅ Location updated successfully", location: serializeLocation(location) });
@@ -715,14 +808,14 @@ exports.getLocationBySlug = async (req, res) => {
 // ====================================================
 exports.getFeaturedLocations = async (req, res) => {
     try {
-        const { limit = 8 } = req.query;
+        const limitNum = Math.min(Math.max(parseInt(req.query.limit || "8", 10), 1), 50);
         const featured = await Location.findAll({
             where: applyMarketScope({ isFeatured: true }, req, {
                 allowAdminOverride: true,
                 allowExplicitOverride: true,
                 allowAllForAdmin: true,
             }),
-            limit: parseInt(limit),
+            limit: limitNum,
             order: [["name", "ASC"]],
         });
 
@@ -761,7 +854,7 @@ exports.searchLocations = async (req, res) => {
     try {
         const q = req.query.q?.trim() || "";
         const { type, limit = 20 } = req.query;
-        const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+        const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
 
         const where = q
             ? {
