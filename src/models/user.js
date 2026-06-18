@@ -27,6 +27,8 @@ module.exports = (sequelize, DataTypes) => {
     emailVerified: { type: DataTypes.BOOLEAN, defaultValue: false },
     emailVerificationCodeHash: { type: DataTypes.STRING, allowNull: true },
     emailVerificationCodeExpiresAt: { type: DataTypes.DATE, allowNull: true },
+    passwordResetTokenHash: { type: DataTypes.STRING, allowNull: true },
+    passwordResetExpiresAt: { type: DataTypes.DATE, allowNull: true },
     lastLogin: DataTypes.DATE,
     googleId: DataTypes.STRING,
     facebookId: DataTypes.STRING,

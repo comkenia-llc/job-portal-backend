@@ -16,8 +16,29 @@ const {
 } = require("../utils/planFeatures");
 const { applyMarketScope, assignMarketToPayload } = require("../utils/market");
 const { assertEmployerMarketAccess } = require("../utils/marketAccess");
+const {
+    buildCompanyProfileStrength,
+    PROFILE_COMPLETION_THRESHOLD,
+} = require("../utils/companyProfileStrength");
+const {
+    sendTemplateMail,
+    getSiteUrl,
+    getEmployerDashboardUrl,
+    getEmployerApplicantsUrl,
+    getPostJobUrl,
+    getAdminNotificationEmail,
+} = require("../services/mailTemplateService");
 
 const clean = (val) => (typeof val === "string" ? val.trim().slice(0, 500) : val || null);
+
+const formatSalaryText = (job) => {
+    if (!job?.salaryMin && !job?.salaryMax) return "";
+    const currency = job.currency || "AED";
+    if (job.salaryMin && job.salaryMax) {
+        return `${currency} ${job.salaryMin} - ${job.salaryMax}`;
+    }
+    return `${currency} ${job.salaryMin || job.salaryMax}`;
+};
 
 // Create a new job
 const parseJSON = (value, fallback = null) => {
@@ -193,10 +214,13 @@ exports.createJob = async (req, res) => {
         }
 
         // Validate required fields
-        if (!data.title || !data.description || !data.companyId || !data.locationId) {
+        if (!data.title || !data.description || !data.companyId) {
             return res.status(400).json({
-                error: "Missing required fields: title, description, company, or location",
+                error: "Missing required fields: title, description, or company",
             });
+        }
+        if (!data.deadline) {
+            return res.status(400).json({ error: "Application deadline is required" });
         }
 
         // Validate company
@@ -206,11 +230,30 @@ exports.createJob = async (req, res) => {
             return res.status(400).json({ error: "Selected company belongs to a different market" });
         }
 
+        const companyProfileStrength = buildCompanyProfileStrength(company.toJSON());
+        if (req.user.role === "employer" && companyProfileStrength.score < PROFILE_COMPLETION_THRESHOLD) {
+            return res.status(403).json({
+                error: `Complete your company profile to at least ${PROFILE_COMPLETION_THRESHOLD}% before posting jobs.`,
+                profileStrength: companyProfileStrength,
+            });
+        }
+
+        data.locationId = data.locationId || company.locationId;
+        if (!data.locationId) {
+            return res.status(400).json({
+                error: "Add a primary company location before posting a job.",
+            });
+        }
+
         // Validate location
         const location = await Location.findByPk(data.locationId);
         if (!location) return res.status(400).json({ error: "Invalid location selected" });
         if (location.market && location.market !== data.market) {
             return res.status(400).json({ error: "Selected location belongs to a different market" });
+        }
+        const deadline = toDateOrNull(data.deadline);
+        if (!deadline) {
+            return res.status(400).json({ error: "Application deadline is required" });
         }
 
         // Ensure employer owns the company
@@ -257,6 +300,7 @@ exports.createJob = async (req, res) => {
         data.experienceLevel = clean(data.experienceLevel);
         data.educationLevel = clean(data.educationLevel);
         data.applicationUrl = clean(data.applicationUrl);
+        data.deadline = deadline;
         data.schemaType = data.schemaType || "JobPosting";
         if (data.jobCategoryId) data.jobCategoryId = Number(data.jobCategoryId);
         if (data.jobSubCategoryId) data.jobSubCategoryId = Number(data.jobSubCategoryId);
@@ -320,6 +364,66 @@ exports.createJob = async (req, res) => {
 
         if (functionIds.length && job.setFunctions) {
             await job.setFunctions(functionIds);
+        }
+
+        if (req.user.role === "employer") {
+            const employerName =
+                `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() ||
+                req.user.username ||
+                req.user.email ||
+                "there";
+            const employerEmail = req.user.email || "";
+            const siteUrl = getSiteUrl();
+            const jobUrl = job.slug ? `${siteUrl}/jobs/${job.slug}` : `${siteUrl}/jobs`;
+
+            if (employerEmail) {
+                sendTemplateMail({
+                    template: "jobSubmitted",
+                    to: employerEmail,
+                    data: {
+                        employerName,
+                        companyName: company.name || "",
+                        jobTitle: job.title,
+                        location: job.location || "",
+                        jobType: job.type || "",
+                        salaryText: formatSalaryText(job),
+                        submittedAt: job.createdAt || new Date(),
+                        dashboardJobUrl: getEmployerDashboardUrl(),
+                        editJobUrl: getEmployerDashboardUrl(),
+                        postAnotherJobUrl: getPostJobUrl(),
+                    },
+                }).catch((mailErr) =>
+                    console.warn("⚠️ [MAILER] Job submitted email failed:", mailErr.message)
+                );
+            }
+
+            sendTemplateMail({
+                template: "adminNewJob",
+                to: getAdminNotificationEmail(),
+                data: {
+                    jobTitle: job.title,
+                    jobSlug: job.slug,
+                    jobType: job.type || "",
+                    jobStatus: job.status || "open",
+                    companyName: company.name || "",
+                    employerName,
+                    employerEmail,
+                    location: job.location || "",
+                    industry: job.industry || "",
+                    salaryMin: job.salaryMin || "",
+                    salaryMax: job.salaryMax || "",
+                    currency: job.currency || "AED",
+                    experienceLevel: job.experienceLevel || "",
+                    educationLevel: job.educationLevel || "",
+                    deadline: job.deadline || "",
+                    submittedAt: job.createdAt || new Date(),
+                    reviewUrl: `${siteUrl}/admin/jobs`,
+                    jobPreviewUrl: jobUrl,
+                    adminDashboardUrl: `${siteUrl}/admin`,
+                },
+            }).catch((mailErr) =>
+                console.warn("⚠️ [MAILER] Admin new job email failed:", mailErr.message)
+            );
         }
 
         res.status(201).json(job);
@@ -789,6 +893,7 @@ exports.updateJob = async (req, res) => {
     try {
         const job = await Job.findByPk(req.params.id);
         if (!job) return res.status(404).json({ error: "Job not found" });
+        const previousStatus = job.status;
         if (req.user.role === "employer") {
             const access = await assertEmployerMarketAccess(req);
             if (!access.ok) {
@@ -846,28 +951,51 @@ exports.updateJob = async (req, res) => {
         // Parse JSON fields
         data.tags = parseJSON(data.tags, job.tags || []);
         data.faqSchema = parseJSON(data.faqSchema, job.faqSchema || null);
-        if (data.companyId) {
-            const company = await Company.findByPk(data.companyId);
-            if (!company) {
-                return res.status(400).json({ error: "Invalid company selected" });
-            }
-            if ((data.market || job.market) && company.market && company.market !== (data.market || job.market)) {
-                return res.status(400).json({ error: "Selected company belongs to a different market" });
-            }
+        const company = await Company.findByPk(data.companyId || job.companyId);
+        if (!company) {
+            return res.status(400).json({ error: "Invalid company selected" });
         }
-        if (data.locationId) {
-            const location = await Location.findByPk(data.locationId);
-            if (!location) {
-                return res.status(400).json({ error: "Invalid location selected" });
-            }
-            if ((data.market || job.market) && location.market && location.market !== (data.market || job.market)) {
-                return res.status(400).json({ error: "Selected location belongs to a different market" });
-            }
+        if ((data.market || job.market) && company.market && company.market !== (data.market || job.market)) {
+            return res.status(400).json({ error: "Selected company belongs to a different market" });
         }
+
+        const companyProfileStrength = buildCompanyProfileStrength(company.toJSON());
+        if (req.user.role === "employer" && companyProfileStrength.score < PROFILE_COMPLETION_THRESHOLD) {
+            return res.status(403).json({
+                error: `Complete your company profile to at least ${PROFILE_COMPLETION_THRESHOLD}% before posting jobs.`,
+                profileStrength: companyProfileStrength,
+            });
+        }
+
+        const resolvedLocationId = data.locationId || job.locationId || company.locationId;
+        if (!resolvedLocationId) {
+            return res.status(400).json({ error: "Add a primary company location before saving this job." });
+        }
+
+        const location = await Location.findByPk(resolvedLocationId);
+        if (!location) {
+            return res.status(400).json({ error: "Invalid location selected" });
+        }
+        if ((data.market || job.market) && location.market && location.market !== (data.market || job.market)) {
+            return res.status(400).json({ error: "Selected location belongs to a different market" });
+        }
+        data.locationId = resolvedLocationId;
+
+        const deadline = toDateOrNull(data.deadline || job.deadline);
+        if (!deadline) {
+            return res.status(400).json({ error: "Application deadline is required" });
+        }
+        data.deadline = deadline;
 
 
         // Default schema type
         if (!data.schemaType) data.schemaType = "JobPosting";
+        const fallbackLocationLabel =
+            location.name ||
+            [location.city, location.state, location.country].filter(Boolean).join(", ") ||
+            location.slug ||
+            `Location ${location.id}`;
+        data.location = clean(data.location) || fallbackLocationLabel;
 
         if (data.slug || data.title || data.location || data.companyId) {
             const targetTitle = data.title || job.title;
@@ -931,6 +1059,69 @@ exports.updateJob = async (req, res) => {
             await job.setFunctions(functionIds);
         } else if (req.body.functionIds || req.body.functions || req.body.functionEntities) {
             await job.setFunctions([]);
+        }
+
+        const companyRecord = await Company.findByPk(job.companyId, {
+            attributes: ["id", "name", "slug"],
+        });
+        const poster = job.postedBy
+            ? await User.findByPk(job.postedBy, {
+                attributes: ["id", "email", "firstName", "lastName", "username"],
+            })
+            : null;
+
+        if (req.user.role === "admin" && poster?.email && data.status && data.status !== previousStatus) {
+            const employerName =
+                `${poster.firstName || ""} ${poster.lastName || ""}`.trim() ||
+                poster.username ||
+                poster.email ||
+                "there";
+            const siteUrl = getSiteUrl();
+            const jobUrl = job.slug ? `${siteUrl}/jobs/${job.slug}` : `${siteUrl}/jobs`;
+
+            if (data.status === "open" && previousStatus !== "open") {
+                sendTemplateMail({
+                    template: "jobApproved",
+                    to: poster.email,
+                    data: {
+                        employerName,
+                        companyName: companyRecord?.name || "",
+                        jobTitle: job.title,
+                        location: job.location || "",
+                        jobType: job.type || "",
+                        salaryText: formatSalaryText(job),
+                        approvedAt: new Date(),
+                        publishedAt: new Date(),
+                        jobUrl,
+                        dashboardJobUrl: getEmployerDashboardUrl(),
+                        applicationsUrl: getEmployerApplicantsUrl(),
+                    },
+                }).catch((mailErr) =>
+                    console.warn("⚠️ [MAILER] Job approved email failed:", mailErr.message)
+                );
+            }
+
+            if (data.status === "closed" && previousStatus === "draft") {
+                sendTemplateMail({
+                    template: "jobRejected",
+                    to: poster.email,
+                    data: {
+                        employerName,
+                        companyName: companyRecord?.name || "",
+                        jobTitle: job.title,
+                        location: job.location || "",
+                        jobType: job.type || "",
+                        salaryText: formatSalaryText(job),
+                        reviewedAt: new Date(),
+                        reason: clean(req.body.reviewReason) || "",
+                        requiredAction: clean(req.body.requiredAction) || "",
+                        editJobUrl: getEmployerDashboardUrl(),
+                        dashboardJobUrl: getEmployerDashboardUrl(),
+                    },
+                }).catch((mailErr) =>
+                    console.warn("⚠️ [MAILER] Job rejected email failed:", mailErr.message)
+                );
+            }
         }
 
         console.log("✅ [UPDATE JOB] Updated successfully:", job.id);

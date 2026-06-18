@@ -23,6 +23,66 @@ const {
 const {
     weeklyJobDigestTemplate,
 } = require("../emails/templates/weeklyJobDigestTemplate");
+const {
+    newLoginAlertTemplate,
+} = require("../emails/templates/newLoginAlertTemplate");
+const {
+    passwordResetTemplate,
+} = require("../emails/templates/passwordResetTemplate");
+const {
+    passwordChangedTemplate,
+} = require("../emails/templates/passwordChangedTemplate");
+const {
+    emailChangedTemplate,
+} = require("../emails/templates/emailChangedTemplate");
+const {
+    accountSuspendedTemplate,
+} = require("../emails/templates/accountSuspendedTemplate");
+const {
+    accountReactivatedTemplate,
+} = require("../emails/templates/accountReactivatedTemplate");
+const {
+    employerSignupReceivedTemplate,
+} = require("../emails/templates/employerSignupReceivedTemplate");
+const {
+    adminNewEmployerTemplate,
+} = require("../emails/templates/adminNewEmployerTemplate");
+const {
+    employerApprovedTemplate,
+} = require("../emails/templates/employerApprovedTemplate");
+const {
+    employerRejectedTemplate,
+} = require("../emails/templates/employerRejectedTemplate");
+const {
+    jobSubmittedTemplate,
+} = require("../emails/templates/jobSubmittedTemplate");
+const {
+    adminNewJobTemplate,
+} = require("../emails/templates/adminNewJobTemplate");
+const {
+    jobApprovedTemplate,
+} = require("../emails/templates/jobApprovedTemplate");
+const {
+    jobRejectedTemplate,
+} = require("../emails/templates/jobRejectedTemplate");
+const {
+    jobExpiringSoonTemplate,
+} = require("../emails/templates/jobExpiringSoonTemplate");
+const {
+    jobExpiredTemplate,
+} = require("../emails/templates/jobExpiredTemplate");
+const {
+    contactFormConfirmationTemplate,
+} = require("../emails/templates/contactFormConfirmationTemplate");
+const {
+    adminContactFormTemplate,
+} = require("../emails/templates/adminContactFormTemplate");
+const {
+    savedJobsReminderTemplate,
+} = require("../emails/templates/savedJobReminderTemplate");
+const {
+    walkInInterviewAlertTemplate,
+} = require("../emails/templates/walkInInterviewAlertTemplate");
 
 const templateRegistry = {
     emailVerificationCode: emailVerificationCodeTemplate,
@@ -33,6 +93,26 @@ const templateRegistry = {
     employerNewApplication: employerNewApplicationTemplate,
     dailyJobAlert: dailyJobAlertTemplate,
     weeklyJobDigest: weeklyJobDigestTemplate,
+    newLoginAlert: newLoginAlertTemplate,
+    passwordReset: passwordResetTemplate,
+    passwordChanged: passwordChangedTemplate,
+    emailChanged: emailChangedTemplate,
+    accountSuspended: accountSuspendedTemplate,
+    accountReactivated: accountReactivatedTemplate,
+    employerSignupReceived: employerSignupReceivedTemplate,
+    adminNewEmployer: adminNewEmployerTemplate,
+    employerApproved: employerApprovedTemplate,
+    employerRejected: employerRejectedTemplate,
+    jobSubmitted: jobSubmittedTemplate,
+    adminNewJob: adminNewJobTemplate,
+    jobApproved: jobApprovedTemplate,
+    jobRejected: jobRejectedTemplate,
+    jobExpiringSoon: jobExpiringSoonTemplate,
+    jobExpired: jobExpiredTemplate,
+    contactFormConfirmation: contactFormConfirmationTemplate,
+    adminContactForm: adminContactFormTemplate,
+    savedJobReminder: savedJobsReminderTemplate,
+    walkInInterviewAlert: walkInInterviewAlertTemplate,
 };
 
 const getSiteUrl = () =>
@@ -45,6 +125,11 @@ const getSupportEmail = () =>
     process.env.MAIL_FROM_EMAIL ||
     process.env.SMTP_USER ||
     "support@dubaijobzone.com";
+
+const getAdminNotificationEmail = () =>
+    process.env.ADMIN_EMAIL ||
+    process.env.MAIL_ADMIN_EMAIL ||
+    getSupportEmail();
 
 const getMailLogoUrl = () => process.env.MAIL_LOGO_URL || "";
 const getCandidateDashboardUrl = () => `${getSiteUrl()}/dashboard`;
@@ -94,6 +179,7 @@ module.exports = {
     sendTemplateMail,
     getSiteUrl,
     getSupportEmail,
+    getAdminNotificationEmail,
     getMailLogoUrl,
     getCandidateDashboardUrl,
     getCandidateApplicationsUrl,

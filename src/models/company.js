@@ -56,6 +56,14 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.JSON,
       allowNull: true,
     },
+    notificationPreferences: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    communicationPreferences: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
   }, {
     tableName: 'Companies'
   });

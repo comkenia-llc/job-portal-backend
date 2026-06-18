@@ -14,6 +14,7 @@ const {
     getEmployerDashboardUrl,
     getEmployerSettingsUrl,
     getPostJobUrl,
+    getAdminNotificationEmail,
 } = require("../services/mailTemplateService");
 const {
     ensureDefaultEmployerPlan,
@@ -32,10 +33,12 @@ const shouldPersistMarketPreference = (resolvedMarket) =>
 
 const EMAIL_VERIFICATION_CODE_LENGTH = 5;
 const EMAIL_VERIFICATION_EXPIRY_MINUTES = 10;
+const PASSWORD_RESET_EXPIRY_MINUTES = 60;
 const EMPLOYER_DASHBOARD_PATH = "/companies/dashboard";
 const EMPLOYER_ONBOARDING_CREATE_COMPANY_PATH = `/companies/create?onboarding=1&redirect=${encodeURIComponent(
     EMPLOYER_DASHBOARD_PATH
 )}`;
+const clean = (value) => (typeof value === "string" ? value.trim() : value || "");
 
 const generateVerificationCode = () =>
     String(Math.floor(Math.random() * 10 ** EMAIL_VERIFICATION_CODE_LENGTH)).padStart(
@@ -46,11 +49,119 @@ const generateVerificationCode = () =>
 const hashVerificationCode = (code) =>
     crypto.createHash("sha256").update(String(code)).digest("hex");
 
+const hashToken = (value) =>
+    crypto.createHash("sha256").update(String(value)).digest("hex");
+
 const getUserDisplayName = (user) =>
     user?.firstName ||
     user?.username ||
     user?.email?.split("@")[0] ||
     "there";
+
+const parseForwardedIp = (value) => {
+    if (!value || typeof value !== "string") return "";
+    return value.split(",")[0].trim();
+};
+
+const normalizeIpAddress = (value) => {
+    if (!value) return "";
+    if (value.startsWith("::ffff:")) {
+        return value.replace("::ffff:", "");
+    }
+    return value;
+};
+
+const getRequestIpAddress = (req) =>
+    normalizeIpAddress(
+        parseForwardedIp(req.headers["x-forwarded-for"]) ||
+            req.headers["cf-connecting-ip"] ||
+            req.headers["x-real-ip"] ||
+            req.socket?.remoteAddress ||
+            ""
+    );
+
+const parseLocationFromHeaders = (req) => {
+    const city =
+        req.headers["x-vercel-ip-city"] ||
+        req.headers["cf-ipcity"] ||
+        "";
+    const region =
+        req.headers["x-vercel-ip-country-region"] ||
+        req.headers["cf-region"] ||
+        "";
+    const country =
+        req.headers["x-vercel-ip-country"] ||
+        req.headers["cf-ipcountry"] ||
+        "";
+
+    return [city, region, country].filter(Boolean).join(", ");
+};
+
+const detectBrowser = (userAgent = "") => {
+    const ua = userAgent.toLowerCase();
+    if (!ua) return "";
+    if (ua.includes("edg/")) return "Microsoft Edge";
+    if (ua.includes("opr/") || ua.includes("opera")) return "Opera";
+    if (ua.includes("chrome/") && !ua.includes("edg/")) return "Google Chrome";
+    if (ua.includes("safari/") && !ua.includes("chrome/")) return "Safari";
+    if (ua.includes("firefox/")) return "Firefox";
+    if (ua.includes("msie") || ua.includes("trident/")) return "Internet Explorer";
+    return "Unknown browser";
+};
+
+const detectOperatingSystem = (userAgent = "") => {
+    const ua = userAgent.toLowerCase();
+    if (!ua) return "";
+    if (ua.includes("windows")) return "Windows";
+    if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) return "iOS";
+    if (ua.includes("mac os") || ua.includes("macintosh")) return "macOS";
+    if (ua.includes("android")) return "Android";
+    if (ua.includes("linux")) return "Linux";
+    return "Unknown system";
+};
+
+const detectDevice = (userAgent = "") => {
+    const ua = userAgent.toLowerCase();
+    if (!ua) return "";
+    if (ua.includes("ipad") || ua.includes("tablet")) return "Tablet";
+    if (ua.includes("mobile") || ua.includes("iphone") || ua.includes("android")) return "Mobile";
+    return "Desktop";
+};
+
+const buildLoginAlertData = (req, user) => {
+    const userAgent = req.headers["user-agent"] || "";
+    const accountSettingsUrl =
+        user?.role === "employer"
+            ? getEmployerSettingsUrl()
+            : getCandidateProfileUrl();
+
+    return {
+        name: getUserDisplayName(user),
+        loginAt: new Date(),
+        ipAddress: getRequestIpAddress(req),
+        location: parseLocationFromHeaders(req),
+        device: detectDevice(userAgent),
+        browser: detectBrowser(userAgent),
+        operatingSystem: detectOperatingSystem(userAgent),
+        accountUrl: accountSettingsUrl,
+        securityUrl: accountSettingsUrl,
+        resetPasswordUrl: `${getSiteUrl()}/auth/forgot-password`,
+    };
+};
+
+const buildSecurityEventData = (req, user = {}) => {
+    const base = buildLoginAlertData(req, user);
+    return {
+        name: getUserDisplayName(user),
+        ipAddress: base.ipAddress,
+        location: base.location,
+        device: base.device,
+        browser: base.browser,
+        accountUrl: base.accountUrl,
+        securityUrl: base.securityUrl,
+        resetPasswordUrl: `${getSiteUrl()}/auth/forgot-password`,
+    };
+};
 
 const setEmailVerificationCode = async (user) => {
     const code = generateVerificationCode();
@@ -66,6 +177,19 @@ const setEmailVerificationCode = async (user) => {
         code,
         expiresAt,
     };
+};
+
+const setPasswordResetToken = async (user) => {
+    const token = crypto.randomBytes(24).toString("hex");
+    const expiresAt = new Date(
+        Date.now() + PASSWORD_RESET_EXPIRY_MINUTES * 60 * 1000
+    );
+
+    user.passwordResetTokenHash = hashToken(token);
+    user.passwordResetExpiresAt = expiresAt;
+    await user.save();
+
+    return { token, expiresAt };
 };
 
 const buildTokenPayload = (user) => {
@@ -253,6 +377,8 @@ exports.login = async (req, res) => {
 
         // 3️⃣ Flatten instance
         const plainUser = user.get({ plain: true });
+        user.lastLogin = new Date();
+        await user.save();
         let linkedCompany = null;
         if (plainUser.company_id) {
             linkedCompany = await Company.findByPk(plainUser.company_id, {
@@ -319,6 +445,14 @@ exports.login = async (req, res) => {
             token,
             user: buildAuthUserResponse(plainUser, linkedCompany, requestMarket),
         });
+
+        sendTemplateMail({
+            template: "newLoginAlert",
+            to: plainUser.email,
+            data: buildLoginAlertData(req, plainUser),
+        }).catch((mailErr) =>
+            console.warn("⚠️ [MAILER] New login alert email failed:", mailErr.message)
+        );
 
         console.log("✅ [LOGIN] Login success for user ID:", plainUser.id);
     } catch (err) {
@@ -572,6 +706,7 @@ exports.updateProfile = async (req, res) => {
 
         const user = await User.findByPk(userId);
         if (!user) return res.status(404).json({ error: "User not found" });
+        const previousEmail = user.email;
 
         if (email && email !== user.email) {
             const existingEmail = await User.findOne({ where: { email } });
@@ -600,6 +735,34 @@ exports.updateProfile = async (req, res) => {
             portfolioUrl: portfolioUrl?.trim() || null,
             about: about?.trim() || null,
         });
+
+        if (email && email.trim() && email.trim() !== previousEmail) {
+            const securityData = buildSecurityEventData(req, user);
+            const templateData = {
+                name: getUserDisplayName(user),
+                oldEmail: previousEmail,
+                newEmail: user.email,
+                changedAt: new Date(),
+                accountUrl: securityData.accountUrl,
+                securityUrl: securityData.securityUrl,
+            };
+
+            sendTemplateMail({
+                template: "emailChanged",
+                to: previousEmail,
+                data: templateData,
+            }).catch((mailErr) =>
+                console.warn("⚠️ [MAILER] Email change alert to old address failed:", mailErr.message)
+            );
+
+            sendTemplateMail({
+                template: "emailChanged",
+                to: user.email,
+                data: templateData,
+            }).catch((mailErr) =>
+                console.warn("⚠️ [MAILER] Email change alert to new address failed:", mailErr.message)
+            );
+        }
 
         // Update or create candidate profile for candidate users
         if (user.role === "candidate") {
@@ -718,10 +881,124 @@ exports.updatePassword = async (req, res) => {
         user.passwordHash = passwordHash;
         await user.save();
 
+        const securityData = buildSecurityEventData(req, user);
+        sendTemplateMail({
+            template: "passwordChanged",
+            to: user.email,
+            data: {
+                name: getUserDisplayName(user),
+                changedAt: new Date(),
+                ipAddress: securityData.ipAddress,
+                location: securityData.location,
+                device: securityData.device,
+                browser: securityData.browser,
+                accountUrl: securityData.accountUrl,
+                securityUrl: securityData.securityUrl,
+                resetPasswordUrl: securityData.resetPasswordUrl,
+            },
+        }).catch((mailErr) =>
+            console.warn("⚠️ [MAILER] Password changed email failed:", mailErr.message)
+        );
+
         res.json({ message: "Password updated successfully" });
     } catch (err) {
         console.error("❌ [PROFILE] updatePassword error:", err);
         res.status(500).json({ error: "Failed to update password" });
+    }
+};
+
+exports.forgotPassword = async (req, res) => {
+    try {
+        const email = String(req.body?.email || "").trim();
+        if (!email) {
+            return res.status(400).json({ error: "Email is required" });
+        }
+
+        const user = await User.findOne({ where: { email } });
+        if (user) {
+            const { token } = await setPasswordResetToken(user);
+            const securityData = buildSecurityEventData(req, user);
+
+            await sendTemplateMail({
+                template: "passwordReset",
+                to: user.email,
+                data: {
+                    name: getUserDisplayName(user),
+                    resetUrl: `${getSiteUrl()}/auth/reset-password?token=${encodeURIComponent(token)}&email=${encodeURIComponent(user.email)}`,
+                    requestedAt: new Date(),
+                    expiresInMinutes: PASSWORD_RESET_EXPIRY_MINUTES,
+                    ipAddress: securityData.ipAddress,
+                    location: securityData.location,
+                    device: securityData.device,
+                    browser: securityData.browser,
+                },
+            });
+        }
+
+        res.json({
+            message: "If an account exists for that email, a reset link has been sent.",
+        });
+    } catch (err) {
+        console.error("❌ [FORGOT PASSWORD] Error:", err);
+        res.status(500).json({ error: "Failed to process password reset request" });
+    }
+};
+
+exports.resetPassword = async (req, res) => {
+    try {
+        const email = String(req.body?.email || "").trim();
+        const token = String(req.body?.token || "").trim();
+        const newPassword = String(req.body?.newPassword || "");
+
+        if (!email || !token || !newPassword) {
+            return res.status(400).json({ error: "Email, token, and new password are required" });
+        }
+        if (newPassword.length < 8) {
+            return res.status(400).json({ error: "New password must be at least 8 characters" });
+        }
+
+        const user = await User.findOne({ where: { email } });
+        if (!user) {
+            return res.status(400).json({ error: "Invalid or expired reset link" });
+        }
+
+        if (
+            !user.passwordResetTokenHash ||
+            !user.passwordResetExpiresAt ||
+            new Date(user.passwordResetExpiresAt) < new Date() ||
+            hashToken(token) !== user.passwordResetTokenHash
+        ) {
+            return res.status(400).json({ error: "Invalid or expired reset link" });
+        }
+
+        user.passwordHash = await bcrypt.hash(newPassword, 10);
+        user.passwordResetTokenHash = null;
+        user.passwordResetExpiresAt = null;
+        await user.save();
+
+        const securityData = buildSecurityEventData(req, user);
+        sendTemplateMail({
+            template: "passwordChanged",
+            to: user.email,
+            data: {
+                name: getUserDisplayName(user),
+                changedAt: new Date(),
+                ipAddress: securityData.ipAddress,
+                location: securityData.location,
+                device: securityData.device,
+                browser: securityData.browser,
+                accountUrl: securityData.accountUrl,
+                securityUrl: securityData.securityUrl,
+                resetPasswordUrl: securityData.resetPasswordUrl,
+            },
+        }).catch((mailErr) =>
+            console.warn("⚠️ [MAILER] Password changed email after reset failed:", mailErr.message)
+        );
+
+        res.json({ message: "Password reset successfully" });
+    } catch (err) {
+        console.error("❌ [RESET PASSWORD] Error:", err);
+        res.status(500).json({ error: "Failed to reset password" });
     }
 };
 
@@ -844,6 +1121,8 @@ exports.updateUser = async (req, res) => {
             console.warn("⚠️ [ADMIN] User not found:", req.params.id);
             return res.status(404).json({ error: "User not found" });
         }
+        const previousStatus = user.status;
+        const previousRole = user.role;
 
         const {
             username,
@@ -898,6 +1177,78 @@ exports.updateUser = async (req, res) => {
             portfolioUrl: portfolioUrl ?? user.portfolioUrl,
             about: about ?? user.about,
         });
+
+        const nextRole = role ?? previousRole;
+        const nextStatus = status ?? previousStatus;
+        const accountDisplayName = getUserDisplayName(user);
+        const dashboardUrl =
+            nextRole === "employer" ? getEmployerDashboardUrl() : getCandidateDashboardUrl();
+
+        if (user.email && nextStatus !== previousStatus) {
+            if (nextStatus === "suspended") {
+                if (nextRole === "employer" && previousStatus === "pending") {
+                    sendTemplateMail({
+                        template: "employerRejected",
+                        to: user.email,
+                        data: {
+                            employerName: accountDisplayName,
+                            companyName: "",
+                            rejectedAt: new Date(),
+                            reason: clean(req.body.reviewReason) || "",
+                            requiredAction: clean(req.body.requiredAction) || "",
+                            resubmitUrl: getEmployerSettingsUrl(),
+                        },
+                    }).catch((mailErr) =>
+                        console.warn("⚠️ [MAILER] Employer rejected email failed:", mailErr.message)
+                    );
+                } else {
+                    sendTemplateMail({
+                        template: "accountSuspended",
+                        to: user.email,
+                        data: {
+                            name: accountDisplayName,
+                            accountType: nextRole === "employer" ? "employer account" : "account",
+                            reason: clean(req.body.reviewReason) || "",
+                            suspendedAt: new Date(),
+                            appealUrl: `${getSiteUrl()}/contact`,
+                        },
+                    }).catch((mailErr) =>
+                        console.warn("⚠️ [MAILER] Account suspended email failed:", mailErr.message)
+                    );
+                }
+            }
+
+            if (nextStatus === "active" && previousStatus !== "active") {
+                if (nextRole === "employer" && previousStatus === "pending") {
+                    sendTemplateMail({
+                        template: "employerApproved",
+                        to: user.email,
+                        data: {
+                            employerName: accountDisplayName,
+                            companyName: "",
+                            approvedAt: new Date(),
+                            dashboardUrl: getEmployerDashboardUrl(),
+                            postJobUrl: getPostJobUrl(),
+                            companyProfileUrl: getEmployerSettingsUrl(),
+                        },
+                    }).catch((mailErr) =>
+                        console.warn("⚠️ [MAILER] Employer approved email failed:", mailErr.message)
+                    );
+                } else {
+                    sendTemplateMail({
+                        template: "accountReactivated",
+                        to: user.email,
+                        data: {
+                            name: accountDisplayName,
+                            accountType: nextRole === "employer" ? "employer account" : "account",
+                            dashboardUrl,
+                        },
+                    }).catch((mailErr) =>
+                        console.warn("⚠️ [MAILER] Account reactivated email failed:", mailErr.message)
+                    );
+                }
+            }
+        }
 
         // If candidate, also sync minimal profile fields
         if ((role || user.role) === "candidate") {

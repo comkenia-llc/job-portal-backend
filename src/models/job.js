@@ -83,6 +83,14 @@ module.exports = (sequelize, DataTypes) => {
       skills: DataTypes.TEXT,
       applicationUrl: DataTypes.STRING,
       deadline: DataTypes.DATE,
+      expiringSoonEmailSentAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
+      expiredEmailSentAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
       views: {
         type: DataTypes.INTEGER,
         defaultValue: 0,

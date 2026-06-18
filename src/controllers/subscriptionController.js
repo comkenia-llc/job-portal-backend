@@ -5,6 +5,7 @@ const { nanoid } = require("nanoid");
 const { assignDefaultEmployerPlan } = require("../services/employerPlanService");
 const { resolveRequestMarket, applyMarketScope } = require("../utils/market");
 const { getCurrencyForMarket } = require("../utils/marketCatalog");
+const { buildCompanyProfileStrength } = require("../utils/companyProfileStrength");
 const stripeSecret = process.env.STRIPE_SECRET_KEY;
 const stripe = stripeSecret ? require("stripe")(stripeSecret) : null;
 
@@ -228,6 +229,26 @@ exports.getCompanySubscription = async (req, res) => {
             return res.status(404).json({ message: "No active plan found for this company." });
         }
 
+        const company = await Company.findByPk(companyId, {
+            attributes: [
+                "id",
+                "name",
+                "slug",
+                "logoUrl",
+                "bannerUrl",
+                "industry",
+                "companyCategoryId",
+                "size",
+                "tagline",
+                "about",
+                "website",
+                "email",
+                "phone",
+                "foundedYear",
+                "locationId",
+            ],
+        });
+
         res.json({
             plan_id: subscription.Plan?.id || null,
             plan: subscription.Plan?.name || null,
@@ -241,6 +262,8 @@ exports.getCompanySubscription = async (req, res) => {
             end_date: subscription.end_date,
             renewal_method: subscription.renewal_method,
             status: subscription.status,
+            company: company ? company.toJSON() : null,
+            profileStrength: company ? buildCompanyProfileStrength(company.toJSON()) : null,
         });
     } catch (error) {
         console.error(error);

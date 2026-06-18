@@ -130,6 +130,7 @@ const jobAlertRoutes = require("./routes/jobAlertRoutes");
 const walkinRoutes = require("./routes/walkin-routes");
 const jobIndustryRoutes = require("./routes/jobIndustryRoutes");
 const mailRoutes = require("./routes/mailRoutes");
+const contactRoutes = require("./routes/contactRoutes");
 
 // ====================================================
 // 🛡️ Apply Rate Limits Before Routes
@@ -185,6 +186,7 @@ app.use("/api/candidates", candidateRoutes);
 app.use("/api/affordability", affordabilityRoutes);
 app.use("/api/admin/job-automation", jobAutomationRoutes);
 app.use("/api/mail", mailRoutes);
+app.use("/api/contact", contactRoutes);
 app.use("/api/job-alerts", jobAlertRoutes);
 app.use("/api/walkin", walkinRoutes);
 

@@ -13,6 +13,17 @@ const { getEmployerPlanFeatures, isFeatureEnabled } = require("../utils/planFeat
 const { assignDefaultEmployerPlan } = require("../services/employerPlanService");
 const { applyMarketScope, assignMarketToPayload } = require("../utils/market");
 const { assertEmployerMarketAccess } = require("../utils/marketAccess");
+const {
+    buildCompanyProfileStrength,
+    PROFILE_COMPLETION_THRESHOLD,
+} = require("../utils/companyProfileStrength");
+const {
+    sendTemplateMail,
+    getSiteUrl,
+    getEmployerDashboardUrl,
+    getEmployerSettingsUrl,
+    getAdminNotificationEmail,
+} = require("../services/mailTemplateService");
 
 // ✅ Utility: fix malformed locationId before DB use
 function sanitizeLocationId(raw) {
@@ -162,6 +173,74 @@ const companyCategoryInclude = {
     attributes: ["id", "name", "slug"],
 };
 
+const DEFAULT_NOTIFICATION_PREFERENCES = {
+    newApplications: true,
+    candidateMessages: true,
+    interviewReminders: true,
+    jobExpiryReminders: true,
+    billingUpdates: true,
+    securityAlerts: true,
+    productAnnouncements: false,
+};
+
+const DEFAULT_COMMUNICATION_PREFERENCES = {
+    emailDelivery: "instant",
+    summaryEmail: "daily",
+    weekendMessages: true,
+    quietHours: false,
+};
+
+function parseJsonInput(value) {
+    if (!value) return null;
+    if (typeof value === "object") return value;
+    if (typeof value !== "string") return null;
+    try {
+        return JSON.parse(value);
+    } catch (_) {
+        return null;
+    }
+}
+
+function normalizeNotificationPreferences(value) {
+    const parsed = parseJsonInput(value);
+    return {
+        ...DEFAULT_NOTIFICATION_PREFERENCES,
+        ...(parsed && typeof parsed === "object" ? parsed : {}),
+    };
+}
+
+function normalizeCommunicationPreferences(value) {
+    const parsed = parseJsonInput(value);
+    const next = {
+        ...DEFAULT_COMMUNICATION_PREFERENCES,
+        ...(parsed && typeof parsed === "object" ? parsed : {}),
+    };
+
+    if (!["instant", "hourly", "manual"].includes(next.emailDelivery)) {
+        next.emailDelivery = DEFAULT_COMMUNICATION_PREFERENCES.emailDelivery;
+    }
+    if (!["daily", "weekly", "never"].includes(next.summaryEmail)) {
+        next.summaryEmail = DEFAULT_COMMUNICATION_PREFERENCES.summaryEmail;
+    }
+
+    return next;
+}
+
+const serializeCompanyWithProfileStrength = (company) => {
+    const json = typeof company?.toJSON === "function" ? company.toJSON() : { ...(company || {}) };
+    return {
+        ...json,
+        notificationPreferences: normalizeNotificationPreferences(json.notificationPreferences),
+        communicationPreferences: normalizeCommunicationPreferences(json.communicationPreferences),
+        profileStrength: buildCompanyProfileStrength(json),
+    };
+};
+
+const buildCompanyLocationText = (location) =>
+    location?.name ||
+    [location?.city, location?.state, location?.country].filter(Boolean).join(", ") ||
+    "";
+
 
 exports.createCompany = async (req, res) => {
     try {
@@ -221,6 +300,19 @@ exports.createCompany = async (req, res) => {
             return res.status(400).json({ error: "Company name is required" });
         if (!data.industry)
             return res.status(400).json({ error: "Industry is required" });
+        if (req.user.role === "employer" && !data.logoUrl) {
+            return res.status(400).json({ error: "Company logo is required" });
+        }
+
+        if (req.user.role === "employer") {
+            const profileStrength = buildCompanyProfileStrength(data);
+            if (profileStrength.score < PROFILE_COMPLETION_THRESHOLD) {
+                return res.status(400).json({
+                    error: `Complete your company profile to at least ${PROFILE_COMPLETION_THRESHOLD}% before continuing`,
+                    profileStrength,
+                });
+            }
+        }
 
         // ✅ Create company
         const slugSeed = data.slug || data.name;
@@ -238,9 +330,60 @@ exports.createCompany = async (req, res) => {
             console.log(`🔗 Linked user ${req.user.id} → company ${company.id}`);
             await assignDefaultEmployerPlan(company.id);
             console.log(`🧾 Assigned default free employer plan to company ${company.id}`);
+
+            const owner = await User.findByPk(req.user.id, {
+                attributes: ["id", "email", "firstName", "lastName", "username", "phone", "status", "emailVerified"],
+            });
+            const location = company.locationId ? await Location.findByPk(company.locationId) : null;
+            const companyLocation = buildCompanyLocationText(location);
+            const employerName =
+                `${owner?.firstName || ""} ${owner?.lastName || ""}`.trim() ||
+                owner?.username ||
+                owner?.email ||
+                "there";
+
+            if (owner?.email) {
+                sendTemplateMail({
+                    template: "employerSignupReceived",
+                    to: owner.email,
+                    data: {
+                        employerName,
+                        companyName: company.name || "",
+                        companyIndustry: company.industry || "",
+                        companyLocation,
+                        submittedAt: company.createdAt || new Date(),
+                        dashboardUrl: getEmployerDashboardUrl(),
+                        companyProfileUrl: getEmployerSettingsUrl(),
+                    },
+                }).catch((mailErr) =>
+                    console.warn("⚠️ [MAILER] Employer signup received email failed:", mailErr.message)
+                );
+            }
+
+            sendTemplateMail({
+                template: "adminNewEmployer",
+                to: getAdminNotificationEmail(),
+                data: {
+                    employerName,
+                    employerEmail: owner?.email || "",
+                    employerPhone: owner?.phone || "",
+                    companyName: company.name || "",
+                    companyIndustry: company.industry || "",
+                    companyWebsite: company.website || "",
+                    companyLocation,
+                    companySize: company.size || "",
+                    registeredAt: company.createdAt || new Date(),
+                    verificationStatus: owner?.emailVerified ? "verified" : "unverified",
+                    employerStatus: owner?.status || "pending",
+                    reviewUrl: `${getSiteUrl()}/admin/users`,
+                    adminDashboardUrl: `${getSiteUrl()}/admin`,
+                },
+            }).catch((mailErr) =>
+                console.warn("⚠️ [MAILER] Admin new employer email failed:", mailErr.message)
+            );
         }
 
-        res.status(201).json(company);
+        res.status(201).json(serializeCompanyWithProfileStrength(company));
     } catch (err) {
         console.error("❌ Create company error:", err);
         res.status(500).json({ error: "Server error" });
@@ -294,6 +437,12 @@ exports.updateCompany = async (req, res) => {
 
         // ✅ Normalize tags
         if (data.tags) data.tags = normalizeTags(data.tags);
+        if (Object.prototype.hasOwnProperty.call(data, "notificationPreferences")) {
+            data.notificationPreferences = normalizeNotificationPreferences(data.notificationPreferences);
+        }
+        if (Object.prototype.hasOwnProperty.call(data, "communicationPreferences")) {
+            data.communicationPreferences = normalizeCommunicationPreferences(data.communicationPreferences);
+        }
 
         // ✅ Handle SEO file uploads
         if (req.files?.logo)
@@ -312,7 +461,7 @@ exports.updateCompany = async (req, res) => {
         console.log("🟡 [UPDATE] Final data before DB update:", JSON.stringify(data, null, 2));
 
         await company.update(data);
-        res.json(company);
+        res.json(serializeCompanyWithProfileStrength(company));
     } catch (err) {
         console.error("❌ Update company error:", err);
         res.status(500).json({ error: "Server error" });
@@ -366,7 +515,7 @@ exports.getCompanies = async (req, res) => {
             include: [locationInclude, companyCategoryInclude],
         });
         const companyMap = Object.fromEntries(
-            companies.map((company) => [company.id, company.toJSON()])
+            companies.map((company) => [company.id, serializeCompanyWithProfileStrength(company)])
         );
         const enriched = jobAgg
             .map((row) => {
@@ -429,7 +578,7 @@ exports.getCompanies = async (req, res) => {
         );
 
         const enriched = companies.map((company) => {
-            const json = company.toJSON();
+            const json = serializeCompanyWithProfileStrength(company);
             const location = json.Location
                 ? {
                       ...json.Location,
@@ -474,7 +623,7 @@ exports.getCompanyById = async (req, res) => {
         });
         if (!company)
             return res.status(404).json({ error: "Company not found" });
-        res.json(company);
+        res.json(serializeCompanyWithProfileStrength(company));
     } catch (err) {
         console.error("❌ Get company error:", err);
         res.status(500).json({ error: "Server error" });
@@ -509,7 +658,7 @@ exports.getCompanyBySlug = async (req, res) => {
             ),
         });
 
-        const json = company.toJSON();
+        const json = serializeCompanyWithProfileStrength(company);
         const location = json.Location
             ? await buildFullLocation(json.Location)
             : null;
@@ -572,10 +721,10 @@ exports.getAllCompaniesAdmin = async (req, res) => {
         });
 
         const enrichedRows = rows.map((company) => {
-            const json = company.toJSON();
+            const json = serializeCompanyWithProfileStrength(company);
             const location = json.Location
                 ? {
-                      ...json.Location,
+                     ...json.Location,
                       label: buildLocationLabel(json.Location),
                   }
                 : null;
@@ -627,6 +776,25 @@ exports.getCompanyPlan = async (req, res) => {
             return res.status(404).json({ message: "No active plan found for this company." });
 
         const plan = subscription.Plan;
+        const company = await Company.findByPk(companyId, {
+            attributes: [
+                "id",
+                "name",
+                "slug",
+                "logoUrl",
+                "bannerUrl",
+                "industry",
+                "companyCategoryId",
+                "size",
+                "tagline",
+                "about",
+                "website",
+                "email",
+                "phone",
+                "foundedYear",
+                "locationId",
+            ],
+        });
 
         const jobCount = await Job.count({ where: { companyId } });
 
@@ -646,6 +814,7 @@ exports.getCompanyPlan = async (req, res) => {
             end_date: subscription.end_date,
             renewal_method: subscription.renewal_method,
             status: subscription.status,
+            company: company ? serializeCompanyWithProfileStrength(company) : null,
         });
     } catch (error) {
         console.error("getCompanyPlan error:", error);

@@ -16,6 +16,7 @@ function applyAssociations(sequelize) {
         BlogPost,
         Guide,
         SavedJob,
+        JobAlert,
         Skill,
         SkillCategory,
         JobFunction,
@@ -60,6 +61,11 @@ function applyAssociations(sequelize) {
 
         Job.hasMany(SavedJob, { foreignKey: 'jobId', as: 'savedBy' });
         SavedJob.belongsTo(Job, { foreignKey: 'jobId', as: 'job' });
+    }
+
+    if (JobAlert) {
+        User.hasMany(JobAlert, { foreignKey: "userId", as: "jobAlerts" });
+        JobAlert.belongsTo(User, { foreignKey: "userId" });
     }
 
     // Resume ↔ Applications

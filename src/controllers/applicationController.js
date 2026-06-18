@@ -22,6 +22,15 @@ const formatSalaryText = (job) => {
     return `${currency} ${job.salaryMin || job.salaryMax}`;
 };
 
+const shouldSendEmployerNotification = (company, key) => {
+    const prefs = company?.notificationPreferences;
+    if (!prefs || typeof prefs !== "object") {
+        return true;
+    }
+
+    return prefs[key] !== false;
+};
+
 const findResumeForUser = async (userId, preferredId) => {
     if (preferredId) {
         const preferred = await Resume.findOne({ where: { id: preferredId, userId } });
@@ -56,7 +65,7 @@ exports.applyToJob = async (req, res) => {
                 {
                     model: Company,
                     as: "company",
-                    attributes: ["id", "name", "slug", "email"],
+                    attributes: ["id", "name", "slug", "email", "notificationPreferences"],
                 },
                 {
                     model: User,
@@ -127,7 +136,7 @@ exports.applyToJob = async (req, res) => {
         }
 
         const employerRecipient = job.poster?.email || job.company?.email;
-        if (employerRecipient) {
+        if (employerRecipient && shouldSendEmployerNotification(job.company, "newApplications")) {
             sendTemplateMail({
                 template: "employerNewApplication",
                 to: employerRecipient,
