@@ -5,6 +5,7 @@ const jwt = require("jsonwebtoken");
 const { Op } = require("sequelize");
 const path = require("path");
 const { resolveRequestMarket } = require("../utils/market");
+const { resolveIpLocation } = require("../services/ipLocationService");
 const {
     sendTemplateMail,
     getSiteUrl,
@@ -124,21 +125,66 @@ const getRequestIpAddress = (req) =>
             ""
     );
 
+const isPrivateOrLocalIp = (value = "") => {
+    const ip = normalizeIpAddress(value);
+
+    if (!ip) return false;
+    if (ip === "127.0.0.1" || ip === "::1") return true;
+    if (ip.startsWith("10.")) return true;
+    if (ip.startsWith("192.168.")) return true;
+    if (ip.startsWith("172.")) {
+        const secondOctet = Number(ip.split(".")[1]);
+        return secondOctet >= 16 && secondOctet <= 31;
+    }
+
+    return false;
+};
+
 const parseLocationFromHeaders = (req) => {
+    const ipAddress = getRequestIpAddress(req);
     const city =
+        req.headers["x-app-ip-city"] ||
         req.headers["x-vercel-ip-city"] ||
         req.headers["cf-ipcity"] ||
         "";
     const region =
+        req.headers["x-app-ip-region"] ||
+        req.headers["x-vercel-ip-region"] ||
         req.headers["x-vercel-ip-country-region"] ||
         req.headers["cf-region"] ||
         "";
     const country =
+        req.headers["x-app-ip-country"] ||
         req.headers["x-vercel-ip-country"] ||
         req.headers["cf-ipcountry"] ||
         "";
+    const locationLabel = [city, region, country].filter(Boolean).join(", ");
 
-    return [city, region, country].filter(Boolean).join(", ");
+    if (locationLabel) {
+        return locationLabel;
+    }
+
+    if (isPrivateOrLocalIp(ipAddress)) {
+        return "Local environment";
+    }
+
+    return "Approximate location unavailable";
+};
+
+const resolveRequestLocation = async (req) => {
+    const headerLocation = parseLocationFromHeaders(req);
+    if (
+        headerLocation &&
+        headerLocation !== "Approximate location unavailable" &&
+        headerLocation !== "Local environment"
+    ) {
+        return headerLocation;
+    }
+
+    const ipAddress = getRequestIpAddress(req);
+    const resolvedLocation = await resolveIpLocation(ipAddress);
+
+    return resolvedLocation || headerLocation;
 };
 
 const detectBrowser = (userAgent = "") => {
@@ -172,7 +218,7 @@ const detectDevice = (userAgent = "") => {
     return "Desktop";
 };
 
-const buildLoginAlertData = (req, user) => {
+const buildLoginAlertData = async (req, user) => {
     const userAgent = req.headers["user-agent"] || "";
     const accountSettingsUrl =
         user?.role === "employer"
@@ -183,7 +229,7 @@ const buildLoginAlertData = (req, user) => {
         name: getUserDisplayName(user),
         loginAt: new Date(),
         ipAddress: getRequestIpAddress(req),
-        location: parseLocationFromHeaders(req),
+        location: await resolveRequestLocation(req),
         device: detectDevice(userAgent),
         browser: detectBrowser(userAgent),
         operatingSystem: detectOperatingSystem(userAgent),
@@ -193,8 +239,8 @@ const buildLoginAlertData = (req, user) => {
     };
 };
 
-const buildSecurityEventData = (req, user = {}) => {
-    const base = buildLoginAlertData(req, user);
+const buildSecurityEventData = async (req, user = {}) => {
+    const base = await buildLoginAlertData(req, user);
     return {
         name: getUserDisplayName(user),
         ipAddress: base.ipAddress,
@@ -552,13 +598,17 @@ exports.login = async (req, res) => {
             user: buildAuthUserResponse(plainUser, linkedCompany, requestMarket),
         });
 
-        sendTemplateMail({
-            template: "newLoginAlert",
-            to: plainUser.email,
-            data: buildLoginAlertData(req, plainUser),
-        }).catch((mailErr) =>
-            console.warn("⚠️ [MAILER] New login alert email failed:", mailErr.message)
-        );
+        buildLoginAlertData(req, plainUser)
+            .then((mailData) =>
+                sendTemplateMail({
+                    template: "newLoginAlert",
+                    to: plainUser.email,
+                    data: mailData,
+                })
+            )
+            .catch((mailErr) =>
+                console.warn("⚠️ [MAILER] New login alert email failed:", mailErr.message)
+            );
 
         console.log("✅ [LOGIN] Login success for user ID:", plainUser.id);
     } catch (err) {
@@ -843,31 +893,33 @@ exports.updateProfile = async (req, res) => {
         });
 
         if (email && email.trim() && email.trim() !== previousEmail) {
-            const securityData = buildSecurityEventData(req, user);
-            const templateData = {
-                name: getUserDisplayName(user),
-                oldEmail: previousEmail,
-                newEmail: user.email,
-                changedAt: new Date(),
-                accountUrl: securityData.accountUrl,
-                securityUrl: securityData.securityUrl,
-            };
+            buildSecurityEventData(req, user)
+                .then((securityData) => {
+                    const templateData = {
+                        name: getUserDisplayName(user),
+                        oldEmail: previousEmail,
+                        newEmail: user.email,
+                        changedAt: new Date(),
+                        accountUrl: securityData.accountUrl,
+                        securityUrl: securityData.securityUrl,
+                    };
 
-            sendTemplateMail({
-                template: "emailChanged",
-                to: previousEmail,
-                data: templateData,
-            }).catch((mailErr) =>
-                console.warn("⚠️ [MAILER] Email change alert to old address failed:", mailErr.message)
-            );
-
-            sendTemplateMail({
-                template: "emailChanged",
-                to: user.email,
-                data: templateData,
-            }).catch((mailErr) =>
-                console.warn("⚠️ [MAILER] Email change alert to new address failed:", mailErr.message)
-            );
+                    return Promise.all([
+                        sendTemplateMail({
+                            template: "emailChanged",
+                            to: previousEmail,
+                            data: templateData,
+                        }),
+                        sendTemplateMail({
+                            template: "emailChanged",
+                            to: user.email,
+                            data: templateData,
+                        }),
+                    ]);
+                })
+                .catch((mailErr) =>
+                    console.warn("⚠️ [MAILER] Email change alert failed:", mailErr.message)
+                );
         }
 
         // Update or create candidate profile for candidate users
@@ -987,24 +1039,27 @@ exports.updatePassword = async (req, res) => {
         user.passwordHash = passwordHash;
         await user.save();
 
-        const securityData = buildSecurityEventData(req, user);
-        sendTemplateMail({
-            template: "passwordChanged",
-            to: user.email,
-            data: {
-                name: getUserDisplayName(user),
-                changedAt: new Date(),
-                ipAddress: securityData.ipAddress,
-                location: securityData.location,
-                device: securityData.device,
-                browser: securityData.browser,
-                accountUrl: securityData.accountUrl,
-                securityUrl: securityData.securityUrl,
-                resetPasswordUrl: securityData.resetPasswordUrl,
-            },
-        }).catch((mailErr) =>
-            console.warn("⚠️ [MAILER] Password changed email failed:", mailErr.message)
-        );
+        buildSecurityEventData(req, user)
+            .then((securityData) =>
+                sendTemplateMail({
+                    template: "passwordChanged",
+                    to: user.email,
+                    data: {
+                        name: getUserDisplayName(user),
+                        changedAt: new Date(),
+                        ipAddress: securityData.ipAddress,
+                        location: securityData.location,
+                        device: securityData.device,
+                        browser: securityData.browser,
+                        accountUrl: securityData.accountUrl,
+                        securityUrl: securityData.securityUrl,
+                        resetPasswordUrl: securityData.resetPasswordUrl,
+                    },
+                })
+            )
+            .catch((mailErr) =>
+                console.warn("⚠️ [MAILER] Password changed email failed:", mailErr.message)
+            );
 
         res.json({ message: "Password updated successfully" });
     } catch (err) {
@@ -1023,7 +1078,7 @@ exports.forgotPassword = async (req, res) => {
         const user = await User.findOne({ where: { email } });
         if (user) {
             const { token } = await setPasswordResetToken(user);
-            const securityData = buildSecurityEventData(req, user);
+            const securityData = await buildSecurityEventData(req, user);
 
             await sendTemplateMail({
                 template: "passwordReset",
@@ -1082,24 +1137,27 @@ exports.resetPassword = async (req, res) => {
         user.passwordResetExpiresAt = null;
         await user.save();
 
-        const securityData = buildSecurityEventData(req, user);
-        sendTemplateMail({
-            template: "passwordChanged",
-            to: user.email,
-            data: {
-                name: getUserDisplayName(user),
-                changedAt: new Date(),
-                ipAddress: securityData.ipAddress,
-                location: securityData.location,
-                device: securityData.device,
-                browser: securityData.browser,
-                accountUrl: securityData.accountUrl,
-                securityUrl: securityData.securityUrl,
-                resetPasswordUrl: securityData.resetPasswordUrl,
-            },
-        }).catch((mailErr) =>
-            console.warn("⚠️ [MAILER] Password changed email after reset failed:", mailErr.message)
-        );
+        buildSecurityEventData(req, user)
+            .then((securityData) =>
+                sendTemplateMail({
+                    template: "passwordChanged",
+                    to: user.email,
+                    data: {
+                        name: getUserDisplayName(user),
+                        changedAt: new Date(),
+                        ipAddress: securityData.ipAddress,
+                        location: securityData.location,
+                        device: securityData.device,
+                        browser: securityData.browser,
+                        accountUrl: securityData.accountUrl,
+                        securityUrl: securityData.securityUrl,
+                        resetPasswordUrl: securityData.resetPasswordUrl,
+                    },
+                })
+            )
+            .catch((mailErr) =>
+                console.warn("⚠️ [MAILER] Password changed email after reset failed:", mailErr.message)
+            );
 
         res.json({ message: "Password reset successfully" });
     } catch (err) {

@@ -71,19 +71,12 @@ function renderEmailHeader({
 
     return `
           <tr>
-            <td align="center" style="background:${selectedTheme.shellBackground};padding:28px 24px 0;text-align:center;">
+            <td align="center" style="background:${selectedTheme.shellBackground};padding:20px 20px 0;text-align:center;">
               <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="max-width:560px;margin:0 auto;">
                 <tr>
-                  <td align="center" style="padding:0 0 18px;">
-                    <div style="font-size:11px;line-height:16px;letter-spacing:1.8px;text-transform:uppercase;color:rgba(255,255,255,0.72);font-weight:800;">
-                      Dubai Job Zone
-                    </div>
-                  </td>
-                </tr>
-                <tr>
-                  <td align="center" style="background:${selectedTheme.panelBackground};border:1px solid ${selectedTheme.panelBorder};border-radius:30px;padding:26px 24px;box-shadow:${selectedTheme.panelGlow};backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);">
+                  <td align="center" style="background:${selectedTheme.panelBackground};border:1px solid ${selectedTheme.panelBorder};border-radius:26px;padding:18px 20px;box-shadow:${selectedTheme.panelGlow}, 0 0 0 1px rgba(255,255,255,0.06);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);">
                     ${safeLogoUrl
-            ? `<img src="${safeLogoUrl}" alt="${safeBrandName}" style="display:block;width:78%;max-width:430px;min-width:220px;height:auto;margin:0 auto;" />`
+            ? `<img src="${safeLogoUrl}" alt="${safeBrandName}" style="display:block;width:84%;max-width:470px;min-width:240px;height:auto;margin:0 auto;" />`
             : `<div style="font-size:28px;line-height:34px;font-weight:900;color:#ffffff;letter-spacing:-0.6px;text-align:center;">${safeBrandName}</div>`
         }
                   </td>
@@ -91,7 +84,7 @@ function renderEmailHeader({
                 ${safeSubtitle
             ? `
                 <tr>
-                  <td align="center" style="padding:16px 8px 0;">
+                  <td align="center" style="padding:12px 8px 0;">
                     <div style="font-size:14px;line-height:22px;color:${selectedTheme.subtitleColor};text-align:center;">
                       ${safeSubtitle}
                     </div>
@@ -105,10 +98,10 @@ function renderEmailHeader({
           </tr>
 
           <tr>
-            <td style="background:${selectedTheme.shellBackground};padding:18px 24px 34px;">
+            <td style="background:${selectedTheme.shellBackground};padding:14px 20px 24px;">
               <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="max-width:560px;margin:0 auto;">
                 <tr>
-                  <td style="background:${selectedTheme.accentBackground};border-radius:18px;padding:14px 18px;text-align:center;font-size:13px;line-height:20px;font-weight:800;color:${selectedTheme.accentText};letter-spacing:0.2px;">
+                  <td style="background:${selectedTheme.accentBackground};border-radius:16px;padding:11px 16px;text-align:center;font-size:13px;line-height:19px;font-weight:800;color:${selectedTheme.accentText};letter-spacing:0.2px;">
                     ${safeAccentLabel}
                   </td>
                 </tr>
