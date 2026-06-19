@@ -61,13 +61,21 @@ function renderEmailHeader({
           </tr>
 
           <tr>
-            <td style="background:${selectedTheme.background};padding:34px 34px 32px;">
+            <td align="center" style="background:${selectedTheme.background};padding:38px 28px 34px;text-align:center;">
               ${safeLogoUrl
-            ? `<img src="${safeLogoUrl}" alt="${safeBrandName}" style="display:block;height:56px;width:auto;max-width:280px;" />`
-            : `<div style="font-size:25px;line-height:30px;font-weight:900;color:#ffffff;letter-spacing:-0.5px;">${safeBrandName}</div>`
+            ? `
+              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                <tr>
+                  <td align="center">
+                    <img src="${safeLogoUrl}" alt="${safeBrandName}" style="display:block;width:75%;max-width:420px;min-width:220px;height:auto;margin:0 auto;" />
+                  </td>
+                </tr>
+              </table>
+              `
+            : `<div style="font-size:25px;line-height:30px;font-weight:900;color:#ffffff;letter-spacing:-0.5px;text-align:center;">${safeBrandName}</div>`
         }
               ${safeSubtitle
-            ? `<div style="margin-top:8px;font-size:14px;line-height:22px;color:${selectedTheme.subtitleColor};">${safeSubtitle}</div>`
+            ? `<div style="margin-top:12px;font-size:14px;line-height:22px;color:${selectedTheme.subtitleColor};text-align:center;">${safeSubtitle}</div>`
             : ""
         }
             </td>
