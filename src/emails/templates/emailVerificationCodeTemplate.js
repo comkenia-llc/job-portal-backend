@@ -1,5 +1,7 @@
 "use strict";
 
+const { renderEmailHeader } = require("./_shared/renderEmailHeader");
+
 const escapeHtml = (value = "") =>
     String(value)
         .replace(/&/g, "&amp;")
@@ -21,7 +23,6 @@ function emailVerificationCodeTemplate({
     const safeExpiresInMinutes = escapeHtml(expiresInMinutes);
     const safeSupportEmail = escapeHtml(supportEmail);
     const safeSiteUrl = escapeHtml(siteUrl);
-    const safeLogoUrl = escapeHtml(logoUrl);
 
     const subject = `${safeCode} is your Dubai Job Zone verification code`;
 
@@ -66,37 +67,11 @@ Support: ${supportEmail}
         <!-- Outer Card -->
         <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="max-width:640px;width:100%;background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 24px 70px rgba(15,23,42,0.14);">
 
-          <!-- Top Brand Strip -->
-          <tr>
-            <td style="background:#0b1220;padding:0;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td style="height:6px;background:linear-gradient(90deg,#2563eb 0%,#06b6d4 42%,#22c55e 100%);font-size:1px;line-height:1px;">
-                    &nbsp;
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <!-- Header -->
-          <tr>
-            <td style="background:linear-gradient(135deg,#0f172a 0%,#172554 48%,#075985 100%);padding:34px 34px 32px;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td style="vertical-align:middle;">
-                    ${safeLogoUrl
-            ? `<img src="${safeLogoUrl}" alt="Dubai Job Zone" style="display:block;height:40px;width:auto;max-width:220px;" />`
-            : `<div style="font-size:25px;line-height:30px;font-weight:900;color:#ffffff;letter-spacing:-0.5px;">Dubai Job Zone</div>`
-        }
-                    <div style="margin-top:8px;font-size:14px;line-height:22px;color:#c7d2fe;">
-                      UAE jobs, walk-in interviews, company profiles and career resources.
-                    </div>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
+          ${renderEmailHeader({
+            logoUrl,
+            theme: "trust",
+            subtitle: "Secure account verification for your Dubai Job Zone access",
+        })}
 
           <!-- Main -->
           <tr>

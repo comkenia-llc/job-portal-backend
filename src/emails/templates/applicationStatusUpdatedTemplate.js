@@ -1,5 +1,7 @@
 "use strict";
 
+const { renderEmailHeader } = require("./_shared/renderEmailHeader");
+
 const escapeHtml = (value = "") =>
     String(value)
         .replace(/&/g, "&amp;")
@@ -32,7 +34,7 @@ const getStatusConfig = (status = "") => {
             badgeBg: "#eff6ff",
             badgeBorder: "#bfdbfe",
             badgeColor: "#1d4ed8",
-            strip: "linear-gradient(90deg,#2563eb 0%,#06b6d4 42%,#22c55e 100%)",
+            headerTheme: "trust",
             title: "Your application has been submitted",
             message:
                 "Your application has been received and is now available for the employer to review.",
@@ -48,7 +50,7 @@ const getStatusConfig = (status = "") => {
             badgeBg: "#f8fafc",
             badgeBorder: "#e2e8f0",
             badgeColor: "#475569",
-            strip: "linear-gradient(90deg,#64748b 0%,#2563eb 52%,#06b6d4 100%)",
+            headerTheme: "trust",
             title: "Your application has been reviewed",
             message:
                 "The employer has reviewed your application. No further action is required right now unless the employer contacts you.",
@@ -64,7 +66,7 @@ const getStatusConfig = (status = "") => {
             badgeBg: "#ecfdf5",
             badgeBorder: "#bbf7d0",
             badgeColor: "#15803d",
-            strip: "linear-gradient(90deg,#22c55e 0%,#06b6d4 48%,#2563eb 100%)",
+            headerTheme: "success",
             title: "Good news — you’ve been shortlisted",
             message:
                 "The employer has shortlisted your application. This means your profile may match what they are looking for.",
@@ -80,7 +82,7 @@ const getStatusConfig = (status = "") => {
             badgeBg: "#eff6ff",
             badgeBorder: "#bfdbfe",
             badgeColor: "#1d4ed8",
-            strip: "linear-gradient(90deg,#2563eb 0%,#7c3aed 50%,#06b6d4 100%)",
+            headerTheme: "opportunity",
             title: "The employer wants to interview you",
             message:
                 "The employer has updated your application status to interview requested. Please check the details and respond quickly if they contact you.",
@@ -96,7 +98,7 @@ const getStatusConfig = (status = "") => {
             badgeBg: "#fff7ed",
             badgeBorder: "#fed7aa",
             badgeColor: "#c2410c",
-            strip: "linear-gradient(90deg,#f97316 0%,#ef4444 48%,#991b1b 100%)",
+            headerTheme: "security",
             title: "Your application was not selected",
             message:
                 "The employer has decided not to move forward with this application. This can happen for many reasons, including experience, timing, location, or role requirements.",
@@ -112,7 +114,7 @@ const getStatusConfig = (status = "") => {
             badgeBg: "#ecfdf5",
             badgeBorder: "#bbf7d0",
             badgeColor: "#15803d",
-            strip: "linear-gradient(90deg,#16a34a 0%,#22c55e 50%,#06b6d4 100%)",
+            headerTheme: "success",
             title: "Congratulations — you’ve been marked as hired",
             message:
                 "The employer has updated your application status to hired. Congratulations on this opportunity.",
@@ -130,7 +132,7 @@ const getStatusConfig = (status = "") => {
             badgeBg: "#eff6ff",
             badgeBorder: "#bfdbfe",
             badgeColor: "#1d4ed8",
-            strip: "linear-gradient(90deg,#2563eb 0%,#06b6d4 42%,#22c55e 100%)",
+            headerTheme: "trust",
             title: "Your application status has been updated",
             message:
                 "There is a new update on your Dubai Job Zone job application. Please review the details below.",
@@ -172,7 +174,6 @@ function applicationStatusUpdatedTemplate({
     const safeUpdatedAt = escapeHtml(formatDate(updatedAt));
     const safeSupportEmail = escapeHtml(supportEmail);
     const safeSiteUrl = escapeHtml(siteUrl);
-    const safeLogoUrl = escapeHtml(logoUrl);
 
     const subject = `Application update: ${config.label} for ${jobTitle}`;
 
@@ -235,29 +236,11 @@ Support: ${supportEmail}
 
         <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="max-width:680px;width:100%;background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 24px 70px rgba(15,23,42,0.14);">
 
-          <tr>
-            <td style="background:#0b1220;padding:0;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td style="height:6px;background:${config.strip};font-size:1px;line-height:1px;">
-                    &nbsp;
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="background:linear-gradient(135deg,#0f172a 0%,#172554 48%,#075985 100%);padding:34px 34px 32px;">
-              ${safeLogoUrl
-            ? `<img src="${safeLogoUrl}" alt="Dubai Job Zone" style="display:block;height:40px;width:auto;max-width:220px;" />`
-            : `<div style="font-size:25px;line-height:30px;font-weight:900;color:#ffffff;letter-spacing:-0.5px;">Dubai Job Zone</div>`
-        }
-              <div style="margin-top:8px;font-size:14px;line-height:22px;color:#c7d2fe;">
-                Application update • Dubai jobs and employer opportunities
-              </div>
-            </td>
-          </tr>
+          ${renderEmailHeader({
+            logoUrl,
+            theme: config.headerTheme,
+            subtitle: "A fresh update has arrived on one of your Dubai Job Zone applications",
+        })}
 
           <tr>
             <td style="padding:38px 34px 30px;">

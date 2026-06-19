@@ -1,5 +1,7 @@
 "use strict";
 
+const { renderEmailHeader } = require("./_shared/renderEmailHeader");
+
 const escapeHtml = (value = "") =>
     String(value)
         .replace(/&/g, "&amp;")
@@ -36,6 +38,7 @@ function newLoginAlertTemplate({
     resetPasswordUrl = "https://dubaijobzone.com/forgot-password",
     supportEmail = "support@dubaijobzone.com",
     siteUrl = "https://dubaijobzone.com",
+    logoUrl = "",
 }) {
     const safeName = escapeHtml(name);
     const safeLoginAt = escapeHtml(formatDate(loginAt));
@@ -98,28 +101,11 @@ Support: ${supportEmail}
 
         <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="max-width:680px;width:100%;background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 24px 70px rgba(15,23,42,0.14);">
 
-          <tr>
-            <td style="background:#0b1220;padding:0;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td style="height:6px;background:linear-gradient(90deg,#f59e0b 0%,#f97316 46%,#ef4444 100%);font-size:1px;line-height:1px;">
-                    &nbsp;
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="background:linear-gradient(135deg,#0f172a 0%,#172554 48%,#075985 100%);padding:34px 34px 32px;">
-              <div style="font-size:25px;line-height:30px;font-weight:900;color:#ffffff;letter-spacing:-0.5px;">
-                Dubai Job Zone
-              </div>
-              <div style="margin-top:8px;font-size:14px;line-height:22px;color:#c7d2fe;">
-                Account security notification
-              </div>
-            </td>
-          </tr>
+          ${renderEmailHeader({
+            logoUrl,
+            theme: "security",
+            subtitle: "Security check: a new sign-in was detected on your account",
+        })}
 
           <tr>
             <td style="padding:38px 34px 30px;">

@@ -1,5 +1,7 @@
 "use strict";
 
+const { renderEmailHeader } = require("./_shared/renderEmailHeader");
+
 const escapeHtml = (value = "") =>
     String(value)
         .replace(/&/g, "&amp;")
@@ -66,7 +68,6 @@ function employerNewApplicationTemplate({
     const safeDashboardUrl = escapeHtml(dashboardUrl);
     const safeSupportEmail = escapeHtml(supportEmail);
     const safeSiteUrl = escapeHtml(siteUrl);
-    const safeLogoUrl = escapeHtml(logoUrl);
 
     const subject = `New application received for ${jobTitle}`;
 
@@ -124,29 +125,11 @@ Support: ${supportEmail}
 
         <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="max-width:680px;width:100%;background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 24px 70px rgba(15,23,42,0.14);">
 
-          <tr>
-            <td style="background:#0b1220;padding:0;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td style="height:6px;background:linear-gradient(90deg,#2563eb 0%,#06b6d4 42%,#22c55e 100%);font-size:1px;line-height:1px;">
-                    &nbsp;
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="background:linear-gradient(135deg,#0f172a 0%,#172554 48%,#075985 100%);padding:34px 34px 32px;">
-              ${safeLogoUrl
-            ? `<img src="${safeLogoUrl}" alt="Dubai Job Zone" style="display:block;height:40px;width:auto;max-width:220px;" />`
-            : `<div style="font-size:25px;line-height:30px;font-weight:900;color:#ffffff;letter-spacing:-0.5px;">Dubai Job Zone</div>`
-        }
-              <div style="margin-top:8px;font-size:14px;line-height:22px;color:#c7d2fe;">
-                Employer notification • New candidate application
-              </div>
-            </td>
-          </tr>
+          ${renderEmailHeader({
+            logoUrl,
+            theme: "opportunity",
+            subtitle: "A promising candidate has entered your hiring pipeline",
+        })}
 
           <tr>
             <td style="padding:38px 34px 30px;">
