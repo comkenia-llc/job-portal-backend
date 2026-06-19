@@ -30,6 +30,66 @@ const {
 } = require("../services/mailTemplateService");
 
 const clean = (val) => (typeof val === "string" ? val.trim().slice(0, 500) : val || null);
+const JOB_TITLE_MIN_LENGTH = 8;
+const JOB_TITLE_MAX_LENGTH = 80;
+const JOB_DESCRIPTION_MIN_LENGTH = 150;
+const JOB_DESCRIPTION_MAX_LENGTH = 8000;
+const JOB_REQUIRED_FIELDS = [
+    "title",
+    "description",
+    "companyId",
+    "locationId",
+    "type",
+    "salaryMin",
+    "salaryMax",
+    "currency",
+    "deadline",
+];
+
+const stripHtml = (value = "") =>
+    value
+        .toString()
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+const validateJobCopy = (title, description) => {
+    const normalizedTitle = typeof title === "string" ? title.trim() : "";
+    const normalizedDescription = stripHtml(description);
+
+    if (normalizedTitle.length < JOB_TITLE_MIN_LENGTH || normalizedTitle.length > JOB_TITLE_MAX_LENGTH) {
+        return `Job title should be between ${JOB_TITLE_MIN_LENGTH} and ${JOB_TITLE_MAX_LENGTH} characters.`;
+    }
+
+    if (
+        normalizedDescription.length < JOB_DESCRIPTION_MIN_LENGTH ||
+        normalizedDescription.length > JOB_DESCRIPTION_MAX_LENGTH
+    ) {
+        return `Job description should be between ${JOB_DESCRIPTION_MIN_LENGTH} and ${JOB_DESCRIPTION_MAX_LENGTH} characters.`;
+    }
+
+    return "";
+};
+
+const validateSalaryRange = (salaryMin, salaryMax) => {
+    if (salaryMin === null || salaryMin === undefined || salaryMax === null || salaryMax === undefined) {
+        return "Add both minimum and maximum salary.";
+    }
+
+    if (!Number.isFinite(salaryMin) || !Number.isFinite(salaryMax)) {
+        return "Salary range is invalid.";
+    }
+
+    if (salaryMin < 0 || salaryMax < 0) {
+        return "Salary cannot be negative.";
+    }
+
+    if (salaryMax < salaryMin) {
+        return "Maximum salary must be greater than or equal to minimum salary.";
+    }
+
+    return "";
+};
 
 const formatSalaryText = (job) => {
     if (!job?.salaryMin && !job?.salaryMax) return "";
@@ -174,6 +234,11 @@ const isLocalDevHost = (req) => {
     );
 };
 
+const resolveJobStatus = (value, fallback = "open") => {
+    const normalized = String(value || fallback).trim().toLowerCase();
+    return ["open", "closed", "draft"].includes(normalized) ? normalized : fallback;
+};
+
 // ✅ Create Job
 exports.createJob = async (req, res) => {
     try {
@@ -284,9 +349,28 @@ exports.createJob = async (req, res) => {
         data.tags = parseJSON(data.tags, []);
         data.faqSchema = parseJSON(data.faqSchema, null);
 
+        data.salaryMin = data.salaryMin ? parseFloat(data.salaryMin) : null;
+        data.salaryMax = data.salaryMax ? parseFloat(data.salaryMax) : null;
+
+        const missingJobFields = JOB_REQUIRED_FIELDS.filter((field) => {
+            if (field === "locationId") return !data.locationId;
+            if (field === "salaryMin") return data.salaryMin === null;
+            if (field === "salaryMax") return data.salaryMax === null;
+            return !data[field];
+        });
+        if (missingJobFields.length) {
+            return res.status(400).json({
+                error: `Complete the required job details before posting: ${missingJobFields.join(", ")}`,
+            });
+        }
+
         // Clean strings
         data.title = clean(data.title);
         data.description = data.description?.trim() || "";
+        const copyValidationError = validateJobCopy(data.title, data.description);
+        if (copyValidationError) {
+            return res.status(400).json({ error: copyValidationError });
+        }
         data.type = clean(data.type);
         const fallbackLocationLabel =
             location.name ||
@@ -302,12 +386,16 @@ exports.createJob = async (req, res) => {
         data.applicationUrl = clean(data.applicationUrl);
         data.deadline = deadline;
         data.schemaType = data.schemaType || "JobPosting";
+        data.status = resolveJobStatus(data.status, "open");
         if (data.jobCategoryId) data.jobCategoryId = Number(data.jobCategoryId);
         if (data.jobSubCategoryId) data.jobSubCategoryId = Number(data.jobSubCategoryId);
 
+        const salaryValidationError = validateSalaryRange(data.salaryMin, data.salaryMax);
+        if (salaryValidationError) {
+            return res.status(400).json({ error: salaryValidationError });
+        }
+
         // Numeric values
-        data.salaryMin = data.salaryMin ? parseFloat(data.salaryMin) : null;
-        data.salaryMax = data.salaryMax ? parseFloat(data.salaryMax) : null;
         data.remote = !!data.remote;
         data.postedBy = req.user.id;
         const slugSeed = data.slug || buildSlugSeed({
@@ -327,25 +415,28 @@ exports.createJob = async (req, res) => {
             if (!features) {
                 return res.status(402).json({ error: "No active plan found for this employer." });
             }
-            if (!isFeatureEnabled(features.can_post_jobs)) {
+            const targetStatus = resolveJobStatus(data.status, "open");
+            const isPublishingLiveJob = targetStatus === "open";
+
+            if (isPublishingLiveJob && !isFeatureEnabled(features.can_post_jobs)) {
                 return res.status(403).json({ error: "Your plan does not allow posting jobs." });
             }
             const maxJobs = parseFeatureNumber(features.max_jobs, null);
-            if (Number.isFinite(maxJobs)) {
-                const activeJobs = await Job.count({ where: { companyId } });
+            if (isPublishingLiveJob && Number.isFinite(maxJobs)) {
+                const activeJobs = await Job.count({ where: { companyId, status: "open" } });
                 if (activeJobs >= maxJobs) {
                     return res.status(403).json({ error: "Job posting limit reached for your plan." });
                 }
             }
 
             const wantsFeatured = data.isFeatured === true || data.isFeatured === "true";
-            if (wantsFeatured) {
+            if (isPublishingLiveJob && wantsFeatured) {
                 if (!isFeatureEnabled(features.can_feature_jobs)) {
                     return res.status(403).json({ error: "Your plan does not allow featured jobs." });
                 }
                 const featuredLimit = parseFeatureNumber(features.featured_jobs_limit, 0);
                 if (featuredLimit > 0) {
-                    const featuredCount = await Job.count({ where: { companyId, isFeatured: true } });
+                    const featuredCount = await Job.count({ where: { companyId, isFeatured: true, status: "open" } });
                     if (featuredCount >= featuredLimit) {
                         return res.status(403).json({ error: "Featured job limit reached for your plan." });
                     }
@@ -987,6 +1078,49 @@ exports.updateJob = async (req, res) => {
         }
         data.deadline = deadline;
 
+        data.salaryMin =
+            Object.prototype.hasOwnProperty.call(data, "salaryMin") && data.salaryMin !== null
+                ? parseFloat(data.salaryMin)
+                : job.salaryMin;
+        data.salaryMax =
+            Object.prototype.hasOwnProperty.call(data, "salaryMax") && data.salaryMax !== null
+                ? parseFloat(data.salaryMax)
+                : job.salaryMax;
+
+        const missingJobFields = JOB_REQUIRED_FIELDS.filter((field) => {
+            if (field === "companyId") return !(data.companyId || job.companyId);
+            if (field === "locationId") return !resolvedLocationId;
+            if (field === "type") return !(data.type || job.type);
+            if (field === "currency") return !(data.currency || job.currency);
+            if (field === "deadline") return !deadline;
+            if (field === "salaryMin") return data.salaryMin === null || data.salaryMin === undefined;
+            if (field === "salaryMax") return data.salaryMax === null || data.salaryMax === undefined;
+            if (field === "title") return !(typeof data.title === "string" ? data.title.trim() : job.title);
+            if (field === "description") {
+                return !(
+                    typeof data.description === "string" ? data.description.trim() : job.description
+                );
+            }
+            return false;
+        });
+        if (missingJobFields.length) {
+            return res.status(400).json({
+                error: `Complete the required job details before saving: ${missingJobFields.join(", ")}`,
+            });
+        }
+
+        const nextTitle = typeof data.title === "string" ? data.title.trim() : job.title;
+        const nextDescription =
+            typeof data.description === "string" ? data.description.trim() : job.description;
+        const copyValidationError = validateJobCopy(nextTitle, nextDescription);
+        if (copyValidationError) {
+            return res.status(400).json({ error: copyValidationError });
+        }
+        const salaryValidationError = validateSalaryRange(data.salaryMin, data.salaryMax);
+        if (salaryValidationError) {
+            return res.status(400).json({ error: salaryValidationError });
+        }
+
 
         // Default schema type
         if (!data.schemaType) data.schemaType = "JobPosting";
@@ -996,6 +1130,7 @@ exports.updateJob = async (req, res) => {
             location.slug ||
             `Location ${location.id}`;
         data.location = clean(data.location) || fallbackLocationLabel;
+        data.status = resolveJobStatus(data.status, job.status || "open");
 
         if (data.slug || data.title || data.location || data.companyId) {
             const targetTitle = data.title || job.title;
@@ -1029,15 +1164,30 @@ exports.updateJob = async (req, res) => {
             if (!features) {
                 return res.status(402).json({ error: "No active plan found for this employer." });
             }
+            const targetStatus = resolveJobStatus(data.status, job.status || "open");
+            const isPublishingLiveJob = targetStatus === "open";
+
+            if (isPublishingLiveJob && !isFeatureEnabled(features.can_post_jobs)) {
+                return res.status(403).json({ error: "Your plan does not allow posting jobs." });
+            }
+
+            const maxJobs = parseFeatureNumber(features.max_jobs, null);
+            const isNewLiveSlot = job.status !== "open" && isPublishingLiveJob;
+            if (isNewLiveSlot && Number.isFinite(maxJobs)) {
+                const activeJobs = await Job.count({ where: { companyId, status: "open" } });
+                if (activeJobs >= maxJobs) {
+                    return res.status(403).json({ error: "Job posting limit reached for your plan." });
+                }
+            }
 
             const wantsFeatured = data.isFeatured === true || data.isFeatured === "true";
-            if (wantsFeatured && !job.isFeatured) {
+            if (isPublishingLiveJob && wantsFeatured && !job.isFeatured) {
                 if (!isFeatureEnabled(features.can_feature_jobs)) {
                     return res.status(403).json({ error: "Your plan does not allow featured jobs." });
                 }
                 const featuredLimit = parseFeatureNumber(features.featured_jobs_limit, 0);
                 if (featuredLimit > 0) {
-                    const featuredCount = await Job.count({ where: { companyId, isFeatured: true } });
+                    const featuredCount = await Job.count({ where: { companyId, isFeatured: true, status: "open" } });
                     if (featuredCount >= featuredLimit) {
                         return res.status(403).json({ error: "Featured job limit reached for your plan." });
                     }

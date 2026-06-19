@@ -24,6 +24,28 @@ const {
     getEmployerSettingsUrl,
     getAdminNotificationEmail,
 } = require("../services/mailTemplateService");
+const jwt = require("jsonwebtoken");
+
+const issueAuthSession = (res, user) => {
+    const payload = {
+        id: user.id,
+        role: user.role,
+        ...(user.company_id ? { companyId: user.company_id } : {}),
+    };
+
+    const token = jwt.sign(payload, process.env.JWT_SECRET, {
+        expiresIn: "7d",
+    });
+
+    res.cookie("token", token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    return token;
+};
 
 // ✅ Utility: fix malformed locationId before DB use
 function sanitizeLocationId(raw) {
@@ -241,6 +263,40 @@ const buildCompanyLocationText = (location) =>
     [location?.city, location?.state, location?.country].filter(Boolean).join(", ") ||
     "";
 
+const EMPLOYER_REQUIRED_COMPANY_FIELDS = [
+    "name",
+    "industry",
+    "companyCategoryId",
+    "size",
+    "about",
+    "website",
+    "email",
+    "phone",
+    "foundedYear",
+    "locationId",
+    "logoUrl",
+];
+
+const validateCompanyCoreFields = (companyLike = {}) => {
+    const missing = EMPLOYER_REQUIRED_COMPANY_FIELDS.filter((field) => {
+        const value = companyLike?.[field];
+        if (typeof value === "string") return value.trim().length === 0;
+        return value === null || value === undefined || value === "";
+    });
+
+    if (missing.length) {
+        return `Complete the required company details: ${missing.join(", ")}`;
+    }
+
+    const foundedYear = Number(companyLike.foundedYear);
+    const currentYear = new Date().getFullYear();
+    if (!Number.isInteger(foundedYear) || foundedYear < 1800 || foundedYear > currentYear) {
+        return "Founded year is invalid.";
+    }
+
+    return "";
+};
+
 
 exports.createCompany = async (req, res) => {
     try {
@@ -305,6 +361,10 @@ exports.createCompany = async (req, res) => {
         }
 
         if (req.user.role === "employer") {
+            const companyValidationError = validateCompanyCoreFields(data);
+            if (companyValidationError) {
+                return res.status(400).json({ error: companyValidationError });
+            }
             const profileStrength = buildCompanyProfileStrength(data);
             if (profileStrength.score < PROFILE_COMPLETION_THRESHOLD) {
                 return res.status(400).json({
@@ -328,6 +388,12 @@ exports.createCompany = async (req, res) => {
                 { where: { id: req.user.id } }
             );
             console.log(`🔗 Linked user ${req.user.id} → company ${company.id}`);
+            const linkedUser = await User.findByPk(req.user.id, {
+                attributes: ["id", "role", "company_id"],
+            });
+            if (linkedUser) {
+                issueAuthSession(res, linkedUser);
+            }
             await assignDefaultEmployerPlan(company.id);
             console.log(`🧾 Assigned default free employer plan to company ${company.id}`);
 
@@ -459,6 +525,17 @@ exports.updateCompany = async (req, res) => {
 
         console.log("📦 Updating company", company.id, "with:", data);
         console.log("🟡 [UPDATE] Final data before DB update:", JSON.stringify(data, null, 2));
+
+        if (req.user.role === "employer") {
+            const companySnapshot = {
+                ...company.toJSON(),
+                ...data,
+            };
+            const companyValidationError = validateCompanyCoreFields(companySnapshot);
+            if (companyValidationError) {
+                return res.status(400).json({ error: companyValidationError });
+            }
+        }
 
         await company.update(data);
         res.json(serializeCompanyWithProfileStrength(company));

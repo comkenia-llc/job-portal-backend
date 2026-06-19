@@ -1,4 +1,28 @@
 const jwt = require("jsonwebtoken");
+const { User } = require("../models");
+
+const resolveUserId = (rawId) =>
+    typeof rawId === "object" && rawId?.id ? rawId.id : rawId;
+
+const resolveEmployerCompanyId = async (decoded, userId) => {
+    if (decoded.companyId) {
+        return decoded.companyId;
+    }
+
+    if (decoded.role !== "employer" || !userId) {
+        return null;
+    }
+
+    try {
+        const user = await User.findByPk(userId, {
+            attributes: ["company_id"],
+        });
+        return user?.company_id || null;
+    } catch (err) {
+        console.warn("⚠️ [AUTH] Failed to resolve employer company from DB:", err.message);
+        return null;
+    }
+};
 
 /**
  * ✅ Main authentication middleware
@@ -6,7 +30,7 @@ const jwt = require("jsonwebtoken");
  *  - HttpOnly cookie (preferred)
  *  - Authorization header (fallback for API clients)
  */
-exports.authMiddleware = (req, res, next) => {
+exports.authMiddleware = async (req, res, next) => {
     try {
         // 🔍 Check both cookie & header
         const token =
@@ -25,16 +49,14 @@ exports.authMiddleware = (req, res, next) => {
         console.log("✅ [AUTH] JWT verified. Raw payload:", decoded);
 
         // 🧹 Handle nested id object bug (id: { id: 3 })
-        const userId =
-            typeof decoded.id === "object" && decoded.id.id
-                ? decoded.id.id
-                : decoded.id;
+        const userId = resolveUserId(decoded.id);
+        const companyId = await resolveEmployerCompanyId(decoded, userId);
 
         // ✅ Attach clean user info to request
         req.user = {
             id: userId,
             role: decoded.role,
-            companyId: decoded.companyId || null, // 🧩 FIX HERE
+            companyId,
             iat: decoded.iat,
             exp: decoded.exp,
         };
@@ -50,7 +72,7 @@ exports.authMiddleware = (req, res, next) => {
 /**
  * 🟦 Optional auth — attaches req.user if token exists; otherwise continues
  */
-exports.optionalAuth = (req, _res, next) => {
+exports.optionalAuth = async (req, _res, next) => {
     try {
         const token =
             req.cookies?.token ||
@@ -64,15 +86,13 @@ exports.optionalAuth = (req, _res, next) => {
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-        const userId =
-            typeof decoded.id === "object" && decoded.id.id
-                ? decoded.id.id
-                : decoded.id;
+        const userId = resolveUserId(decoded.id);
+        const companyId = await resolveEmployerCompanyId(decoded, userId);
 
         req.user = {
             id: userId,
             role: decoded.role,
-            companyId: decoded.companyId || null,
+            companyId,
             iat: decoded.iat,
             exp: decoded.exp,
         };

@@ -58,6 +58,91 @@ const frontendBase =
     process.env.NEXT_PUBLIC_FRONT_URL ||
     "http://localhost:3000";
 
+const normalizeFeatures = (value) => {
+    if (!value) return {};
+    if (typeof value === "string") {
+        try {
+            return JSON.parse(value);
+        } catch {
+            return {};
+        }
+    }
+    return typeof value === "object" ? value : {};
+};
+
+const toAmount = (plan) => {
+    const monthly = Number(plan?.price_monthly || 0);
+    const yearly = Number(plan?.price_yearly || 0);
+    return yearly || monthly || 0;
+};
+
+const detectBillingCycle = (plan, subscription) => {
+    if (subscription?.renewal_method === "manual" && Number(plan?.price_monthly || 0) > 0) {
+        return "monthly";
+    }
+    if (Number(plan?.price_yearly || 0) > 0 && Number(plan?.price_monthly || 0) === 0) {
+        return "yearly";
+    }
+    return Number(plan?.price_yearly || 0) > 0 && Number(plan?.price_monthly || 0) > 0
+        ? "monthly"
+        : plan?.duration_type || "monthly";
+};
+
+const buildInvoiceNumber = (subscription) =>
+    `DJZ-${String(subscription.id).padStart(6, "0")}`;
+
+const serializeSubscriptionRecord = (subscription) => {
+    const plan = subscription?.Plan || {};
+    const billingCycle = detectBillingCycle(plan, subscription);
+    const amount = billingCycle === "yearly"
+        ? Number(plan?.price_yearly || 0) || Number(plan?.price_monthly || 0) || 0
+        : Number(plan?.price_monthly || 0) || Number(plan?.price_yearly || 0) || 0;
+
+    return {
+        id: subscription.id,
+        status: subscription.status,
+        start_date: subscription.start_date,
+        end_date: subscription.end_date,
+        createdAt: subscription.createdAt,
+        updatedAt: subscription.updatedAt,
+        renewal_method: subscription.renewal_method,
+        payment_method: subscription.payment_method || null,
+        payment_reference: subscription.payment_reference || null,
+        stripe_customer_id: subscription.stripe_customer_id || null,
+        stripe_subscription_id: subscription.stripe_subscription_id || null,
+        notes: subscription.notes || null,
+        usage_snapshot: subscription.usage_snapshot || null,
+        plan: {
+            id: plan.id || null,
+            name: plan.name || null,
+            slug: plan.slug || null,
+            description: plan.description || null,
+            currency: plan.currency || null,
+            price_monthly: plan.price_monthly ?? null,
+            price_yearly: plan.price_yearly ?? null,
+            billing_cycle: billingCycle,
+            amount,
+            features: normalizeFeatures(plan.features),
+        },
+        invoice: {
+            number: buildInvoiceNumber(subscription),
+            amount,
+            currency: plan.currency || null,
+            status:
+                subscription.status === "active"
+                    ? "paid"
+                    : subscription.status === "pending"
+                      ? "pending"
+                      : subscription.status,
+            issued_at: subscription.createdAt || subscription.start_date,
+            period_start: subscription.start_date,
+            period_end: subscription.end_date,
+            payment_method: subscription.payment_method || null,
+            payment_reference: subscription.payment_reference || null,
+        },
+    };
+};
+
 const resolvePlanWhere = (slug, audience, market) => {
     const where = {
         slug,
@@ -208,7 +293,7 @@ exports.getCompanySubscription = async (req, res) => {
                     [Op.or]: [{ [Op.gt]: new Date() }, { [Op.is]: null }],
                 },
             },
-            include: [{ model: Plan, attributes: ["id", "name", "features", "price_monthly", "price_yearly", "currency", "description", "slug"] }],
+            include: [{ model: Plan, attributes: ["id", "name", "features", "price_monthly", "price_yearly", "currency", "description", "slug", "duration_type"] }],
         });
 
         if (!subscription && req.user.role === "employer") {
@@ -221,7 +306,7 @@ exports.getCompanySubscription = async (req, res) => {
                         [Op.or]: [{ [Op.gt]: new Date() }, { [Op.is]: null }],
                     },
                 },
-                include: [{ model: Plan, attributes: ["id", "name", "features", "price_monthly", "price_yearly", "currency", "description", "slug"] }],
+                include: [{ model: Plan, attributes: ["id", "name", "features", "price_monthly", "price_yearly", "currency", "description", "slug", "duration_type"] }],
             });
         }
 
@@ -249,6 +334,16 @@ exports.getCompanySubscription = async (req, res) => {
             ],
         });
 
+        const history = await CompanySubscription.findAll({
+            where: { company_id: companyId },
+            include: [{ model: Plan, attributes: ["id", "name", "features", "price_monthly", "price_yearly", "currency", "description", "slug", "duration_type"] }],
+            order: [["createdAt", "DESC"]],
+        });
+
+        const currentRecord = serializeSubscriptionRecord(subscription);
+        const historyRecords = history.map(serializeSubscriptionRecord);
+        const invoiceRecords = historyRecords.map((record) => record.invoice);
+
         res.json({
             plan_id: subscription.Plan?.id || null,
             plan: subscription.Plan?.name || null,
@@ -257,11 +352,20 @@ exports.getCompanySubscription = async (req, res) => {
             plan_price_monthly: subscription.Plan?.price_monthly ?? null,
             plan_price_yearly: subscription.Plan?.price_yearly ?? null,
             plan_currency: subscription.Plan?.currency || null,
-            features: subscription.Plan?.features || {},
+            features: normalizeFeatures(subscription.Plan?.features || {}),
             start_date: subscription.start_date,
             end_date: subscription.end_date,
             renewal_method: subscription.renewal_method,
             status: subscription.status,
+            payment_method: subscription.payment_method || null,
+            payment_reference: subscription.payment_reference || null,
+            stripe_customer_id: subscription.stripe_customer_id || null,
+            stripe_subscription_id: subscription.stripe_subscription_id || null,
+            notes: subscription.notes || null,
+            usage_snapshot: subscription.usage_snapshot || null,
+            current_subscription: currentRecord,
+            subscription_history: historyRecords,
+            invoices: invoiceRecords,
             company: company ? company.toJSON() : null,
             profileStrength: company ? buildCompanyProfileStrength(company.toJSON()) : null,
         });

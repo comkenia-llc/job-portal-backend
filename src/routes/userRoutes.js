@@ -5,6 +5,7 @@ const { authMiddleware, adminMiddleware } = require("../middlewares/authMiddlewa
 const upload = require("../middlewares/upload");
 
 // Public
+router.get("/register/check", userController.checkRegistrationAvailability);
 router.post("/register", userController.register);
 router.post("/login", userController.login);
 router.post("/logout", userController.logout);

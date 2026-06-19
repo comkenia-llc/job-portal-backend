@@ -58,6 +58,50 @@ const getUserDisplayName = (user) =>
     user?.email?.split("@")[0] ||
     "there";
 
+const normalizeUsername = (value) =>
+    (value || "")
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]/g, "")
+        .slice(0, 30);
+
+const buildUsernameSuggestions = async (rawUsername) => {
+    const base = normalizeUsername(rawUsername).replace(/^[._-]+|[._-]+$/g, "") || "member";
+    const candidateSet = new Set();
+    const suffixes = [
+        "official",
+        "jobs",
+        "career",
+        "hub",
+        "zone",
+        "global",
+        "online",
+        String(new Date().getFullYear()),
+    ];
+
+    candidateSet.add(base);
+    suffixes.forEach((suffix) => candidateSet.add(`${base}${suffix}`));
+    for (let i = 1; i <= 8; i += 1) {
+        candidateSet.add(`${base}${i}`);
+    }
+
+    const candidates = [...candidateSet]
+        .map((item) => normalizeUsername(item))
+        .filter((item) => item && item.length >= 3)
+        .slice(0, 20);
+
+    if (!candidates.length) return [];
+
+    const existingUsers = await User.findAll({
+        where: { username: candidates },
+        attributes: ["username"],
+    });
+    const taken = new Set(existingUsers.map((user) => user.username));
+
+    return candidates.filter((candidate) => !taken.has(candidate)).slice(0, 4);
+};
+
 const parseForwardedIp = (value) => {
     if (!value || typeof value !== "string") return "";
     return value.split(",")[0].trim();
@@ -256,7 +300,9 @@ const resolvePostAuthRedirect = (plainUser) => {
 exports.register = async (req, res) => {
     console.log("📝 [REGISTER] Incoming request body:", req.body);
     try {
-        const { username, email, password, role } = req.body;
+        const username = req.body.username?.trim();
+        const email = req.body.email?.trim().toLowerCase();
+        const { password, role } = req.body;
         const resolvedMarket = resolveRequestMarket(req, {
             allowAdminOverride: false,
         });
@@ -270,12 +316,26 @@ exports.register = async (req, res) => {
         }
 
         // Check existing
-        const existing = await User.findOne({
-            where: { [Op.or]: [{ email }, { username }] },
-        });
-        if (existing) {
-            console.warn("⚠️ [REGISTER] User already exists:", existing.email);
-            return res.status(409).json({ error: "User already exists" });
+        const [existingUsername, existingEmail] = await Promise.all([
+            User.findOne({ where: { username }, attributes: ["id", "username"] }),
+            User.findOne({ where: { email }, attributes: ["id", "email"] }),
+        ]);
+        if (existingUsername) {
+            console.warn("⚠️ [REGISTER] Username already exists:", existingUsername.username);
+            return res.status(409).json({
+                error: "This username is already taken.",
+                code: "USERNAME_TAKEN",
+                field: "username",
+                suggestions: await buildUsernameSuggestions(username),
+            });
+        }
+        if (existingEmail) {
+            console.warn("⚠️ [REGISTER] Email already exists:", existingEmail.email);
+            return res.status(409).json({
+                error: "This email is already registered.",
+                code: "EMAIL_TAKEN",
+                field: "email",
+            });
         }
 
         // Hash password
@@ -329,6 +389,52 @@ exports.register = async (req, res) => {
     } catch (err) {
         console.error("❌ [REGISTER] Error:", err);
         res.status(500).json({ error: "Failed to register user" });
+    }
+};
+
+exports.checkRegistrationAvailability = async (req, res) => {
+    try {
+        const username = req.query.username?.trim();
+        const email = req.query.email?.trim().toLowerCase();
+
+        const response = {
+            username: null,
+            email: null,
+        };
+
+        if (username) {
+            const existingUsername = await User.findOne({
+                where: { username },
+                attributes: ["id"],
+            });
+            response.username = {
+                value: username,
+                available: !existingUsername,
+                message: existingUsername
+                    ? "This username is already taken."
+                    : "This username is available.",
+                suggestions: existingUsername ? await buildUsernameSuggestions(username) : [],
+            };
+        }
+
+        if (email) {
+            const existingEmail = await User.findOne({
+                where: { email },
+                attributes: ["id"],
+            });
+            response.email = {
+                value: email,
+                available: !existingEmail,
+                message: existingEmail
+                    ? "This email is already registered."
+                    : "This email is available.",
+            };
+        }
+
+        res.json(response);
+    } catch (err) {
+        console.error("❌ [REGISTER CHECK] Error:", err);
+        res.status(500).json({ error: "Failed to check registration availability" });
     }
 };
 

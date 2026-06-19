@@ -30,6 +30,8 @@ module.exports = (sequelize, DataTypes) => {
             },
             payment_method: DataTypes.STRING,
             payment_reference: DataTypes.STRING,
+            stripe_customer_id: DataTypes.STRING,
+            stripe_subscription_id: DataTypes.STRING,
             usage_snapshot: DataTypes.JSON,
             notes: DataTypes.TEXT,
         },
