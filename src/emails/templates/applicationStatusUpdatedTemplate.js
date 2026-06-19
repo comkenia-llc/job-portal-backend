@@ -240,6 +240,7 @@ Support: ${supportEmail}
             logoUrl,
             theme: config.headerTheme,
             subtitle: "A fresh update has arrived on one of your Dubai Job Zone applications",
+            accentLabel: `Application update: ${config.label}`,
         })}
 
           <tr>

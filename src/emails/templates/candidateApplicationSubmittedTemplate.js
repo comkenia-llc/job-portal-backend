@@ -105,6 +105,7 @@ Support: ${supportEmail}
             logoUrl,
             theme: "success",
             subtitle: "Your application is in. Keep your momentum going with fresh opportunities",
+            accentLabel: "Your application has been sent successfully",
         })}
 
           <tr>

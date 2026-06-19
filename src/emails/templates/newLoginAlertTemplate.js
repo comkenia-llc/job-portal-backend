@@ -105,6 +105,7 @@ Support: ${supportEmail}
             logoUrl,
             theme: "security",
             subtitle: "Security check: a new sign-in was detected on your account",
+            accentLabel: "Please review this new sign-in activity",
         })}
 
           <tr>

@@ -129,6 +129,7 @@ Support: ${supportEmail}
             logoUrl,
             theme: "opportunity",
             subtitle: "A promising candidate has entered your hiring pipeline",
+            accentLabel: "A new candidate just applied to your job",
         })}
 
           <tr>

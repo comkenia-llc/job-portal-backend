@@ -100,6 +100,7 @@ Support: ${supportEmail}
             logoUrl,
             theme: "security",
             subtitle: "Secure password reset access for your Dubai Job Zone account",
+            accentLabel: "Your password reset request is ready",
         })}
 
           <tr>

@@ -88,6 +88,7 @@ Support: ${supportEmail}
             logoUrl,
             theme: "opportunity",
             subtitle: "Fresh opportunities, trusted employers, and career growth across the UAE",
+            accentLabel: "Your account is ready for new opportunities",
         })}
 
           <tr>

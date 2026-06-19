@@ -225,6 +225,7 @@ Support: ${supportEmail}
             logoUrl,
             theme: "digest",
             subtitle: "Today’s strongest matches, picked from fresh UAE hiring activity",
+            accentLabel: "Fresh job matches picked for you today",
         })}
 
           <tr>

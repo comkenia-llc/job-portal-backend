@@ -71,6 +71,7 @@ Support: ${supportEmail}
             logoUrl,
             theme: "trust",
             subtitle: "Secure account verification for your Dubai Job Zone access",
+            accentLabel: "Use your code to activate your account",
         })}
 
           <!-- Main -->

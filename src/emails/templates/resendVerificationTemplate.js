@@ -89,6 +89,7 @@ Support: ${supportEmail}
             logoUrl,
             theme: "trust",
             subtitle: "A fresh verification code is ready so you can finish account setup",
+            accentLabel: "Your new verification code is ready",
         })}
 
           <tr>

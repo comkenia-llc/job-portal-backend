@@ -316,6 +316,7 @@ Support: ${supportEmail}
             logoUrl,
             theme: "digest",
             subtitle: "A weekly roundup of jobs, hiring trends, and opportunities worth opening",
+            accentLabel: "Your weekly hiring and opportunities roundup",
         })}
 
           <tr>
